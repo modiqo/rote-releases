@@ -1,0 +1,65 @@
+#!/bin/bash
+set -e
+
+# rote VS Code extension installer
+# Usage: curl -fsSL https://rote.sh/install-vscode | bash
+#
+# Downloads the latest .vsix from GitHub releases and installs it.
+# Requires: code (VS Code) on PATH.
+
+REPO="modiqo/rote-vscode"
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+DIM='\033[2m'
+NC='\033[0m'
+
+echo ""
+printf "  ${BOLD}rote${NC} ${DIM}· VS Code extension installer${NC}\n"
+echo ""
+
+# Check VS Code is available
+if ! command -v code >/dev/null 2>&1; then
+    printf "  ${RED}✗${NC} VS Code CLI (code) not found on PATH.\n"
+    printf "  ${DIM}  Open VS Code → Cmd+Shift+P → 'Shell Command: Install code'${NC}\n"
+    exit 1
+fi
+
+# Get latest release tag
+printf "  ${DIM}Resolving latest version...${NC}\r"
+TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+    | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+
+if [ -z "$TAG" ]; then
+    # No releases yet — download from main branch artifacts
+    printf "  ${DIM}No releases found. Downloading from main branch...${NC}\n"
+    DOWNLOAD_URL="https://github.com/$REPO/raw/main/modiqo-0.1.0.vsix"
+    VSIX_FILE="/tmp/rote-vscode.vsix"
+
+    if ! curl -fsSL "$DOWNLOAD_URL" -o "$VSIX_FILE" 2>/dev/null; then
+        printf "  ${RED}✗${NC} Download failed.\n"
+        exit 1
+    fi
+else
+    VERSION="${TAG#v}"
+    printf "  ${GREEN}●${NC} Found v${VERSION}\n"
+
+    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/modiqo-${VERSION}.vsix"
+    VSIX_FILE="/tmp/rote-vscode-${VERSION}.vsix"
+
+    if ! curl -fsSL "$DOWNLOAD_URL" -o "$VSIX_FILE"; then
+        printf "  ${RED}✗${NC} Download failed: $DOWNLOAD_URL\n"
+        exit 1
+    fi
+fi
+
+# Install
+printf "  ${DIM}Installing extension...${NC}\r"
+code --install-extension "$VSIX_FILE" --force >/dev/null 2>&1
+
+rm -f "$VSIX_FILE"
+
+echo ""
+printf "  ${GREEN}●${NC} ${BOLD}rote${NC} extension installed.\n"
+printf "  ${DIM}  Reload VS Code to activate.${NC}\n"
+echo ""
