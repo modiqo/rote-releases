@@ -1,18 +1,18 @@
 #!/bin/bash
 set -e
 
-# dex installer — Time to Agent™
-# Usage: curl -fsSL https://raw.githubusercontent.com/modiqo/dex-releases/main/install.sh | bash
-# Non-interactive: DEX_YES=1 curl -fsSL ... | bash
+# rote installer — Time to Agent™
+# Usage: curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh | bash
+# Non-interactive: ROTE_YES=1 curl -fsSL ... | bash
 
 # Configuration
-REPO="modiqo/dex-releases"
-INSTALL_DIR="${DEX_INSTALL_DIR:-$HOME/.local/bin}"
-VERSION="${DEX_VERSION:-latest}"
-AUTO_YES="${DEX_YES:-}"
+REPO="modiqo/rote-releases"
+INSTALL_DIR="${ROTE_INSTALL_DIR:-$HOME/.local/bin}"
+VERSION="${ROTE_VERSION:-latest}"
+AUTO_YES="${ROTE_YES:-}"
 
 # ─── Log setup ───────────────────────────────────────────────────────────────
-LOG_DIR="$HOME/.dex/log"
+LOG_DIR="$HOME/.rote/log"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/install.log"
 : > "$LOG_FILE"
@@ -57,7 +57,7 @@ progress() {
     local message="$1"; shift
     # "$@" is the command
 
-    local out_file=$(mktemp /tmp/dex_out.XXXXXX)
+    local out_file=$(mktemp /tmp/rote_out.XXXXXX)
     local spinner_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 
     # Run command in background
@@ -170,11 +170,11 @@ detect_platform() {
     esac
 
     case "$OS-$ARCH" in
-        linux-x86_64)   ARTIFACT="dex-linux-x86_64-musl";  ARCHIVE_EXT="tar.gz" ;;
-        linux-aarch64)  ARTIFACT="dex-linux-aarch64-musl";  ARCHIVE_EXT="tar.gz" ;;
-        macos-x86_64)   ARTIFACT="dex-macos-x86_64";       ARCHIVE_EXT="tar.gz" ;;
-        macos-aarch64)  ARTIFACT="dex-macos-aarch64";       ARCHIVE_EXT="tar.gz" ;;
-        windows-x86_64) ARTIFACT="dex-windows-x86_64";     ARCHIVE_EXT="zip" ;;
+        linux-x86_64)   ARTIFACT="rote-linux-x86_64-musl";  ARCHIVE_EXT="tar.gz" ;;
+        linux-aarch64)  ARTIFACT="rote-linux-aarch64-musl";  ARCHIVE_EXT="tar.gz" ;;
+        macos-x86_64)   ARTIFACT="rote-macos-x86_64";       ARCHIVE_EXT="tar.gz" ;;
+        macos-aarch64)  ARTIFACT="rote-macos-aarch64";       ARCHIVE_EXT="tar.gz" ;;
+        windows-x86_64) ARTIFACT="rote-windows-x86_64";     ARCHIVE_EXT="zip" ;;
         *)
             printf "\r  ${RED}✗${NC}  detect     No binary for %s\n" "$OS-$ARCH" >&2
             exit 1 ;;
@@ -187,15 +187,15 @@ detect_platform() {
 # ═══════════════════════════════════════════════════════════════════════════════
 # Install sequence
 # ═══════════════════════════════════════════════════════════════════════════════
-install_dex() {
+install_rote() {
     local download_url="https://github.com/$REPO/releases/download/v${VERSION}/${ARTIFACT}.${ARCHIVE_EXT}"
     local tmp_dir=$(mktemp -d)
-    local archive_file="$tmp_dir/dex.${ARCHIVE_EXT}"
+    local archive_file="$tmp_dir/rote.${ARCHIVE_EXT}"
 
     log "Download URL: $download_url"
 
     # ── download ──────────────────────────────────────────────────────────
-    if ! progress "download" "Fetching dex v${VERSION}..." \
+    if ! progress "download" "Fetching rote v${VERSION}..." \
         curl -fsSL "$download_url" -o "$archive_file"; then
         progress_clear
         printf "  ${RED}✗${NC}  download   Download failed — check %s\n" "$LOG_FILE" >&2
@@ -221,16 +221,16 @@ install_dex() {
     mkdir -p "$INSTALL_DIR"
 
     if [ "$OS" = "windows" ]; then
-        mv "$tmp_dir/dex.exe" "$INSTALL_DIR/dex.exe"
-        chmod +x "$INSTALL_DIR/dex.exe"
-        BINARY_PATH="$INSTALL_DIR/dex.exe"
+        mv "$tmp_dir/rote.exe" "$INSTALL_DIR/rote.exe"
+        chmod +x "$INSTALL_DIR/rote.exe"
+        BINARY_PATH="$INSTALL_DIR/rote.exe"
     else
-        mv "$tmp_dir/dex" "$INSTALL_DIR/dex"
-        chmod +x "$INSTALL_DIR/dex"
-        BINARY_PATH="$INSTALL_DIR/dex"
-        if [ -f "$tmp_dir/dex-stdio-daemon" ]; then
-            mv "$tmp_dir/dex-stdio-daemon" "$INSTALL_DIR/dex-stdio-daemon"
-            chmod +x "$INSTALL_DIR/dex-stdio-daemon"
+        mv "$tmp_dir/rote" "$INSTALL_DIR/rote"
+        chmod +x "$INSTALL_DIR/rote"
+        BINARY_PATH="$INSTALL_DIR/rote"
+        if [ -f "$tmp_dir/rote-stdio-daemon" ]; then
+            mv "$tmp_dir/rote-stdio-daemon" "$INSTALL_DIR/rote-stdio-daemon"
+            chmod +x "$INSTALL_DIR/rote-stdio-daemon"
         fi
     fi
 
@@ -243,34 +243,34 @@ install_dex() {
         STEP_COUNT=$((STEP_COUNT + 1))
     fi
 
-    if command -v dex >/dev/null 2>&1; then
+    if command -v rote >/dev/null 2>&1; then
         local ver_output
-        ver_output=$(dex --version 2>/dev/null || echo "unknown")
+        ver_output=$(rote --version 2>/dev/null || echo "unknown")
         progress_ok "verify" "$ver_output"
     else
         progress_ok "verify" "Binary installed (restart shell to use)"
     fi
 
     # ── node.js ───────────────────────────────────────────────────────────
-    if command -v dex >/dev/null 2>&1; then
+    if command -v rote >/dev/null 2>&1; then
         progress "node" "Setting up Node.js runtime..." \
-            dex node install || true
+            rote node install || true
     fi
 
     # ── path config ───────────────────────────────────────────────────────
-    if [ -d "$HOME/.dex/bin" ]; then
+    if [ -d "$HOME/.rote/bin" ]; then
         case ":$PATH:" in
-            *":$HOME/.dex/bin:"*) ;;
-            *) export PATH="$HOME/.dex/bin:$PATH" ;;
+            *":$HOME/.rote/bin:"*) ;;
+            *) export PATH="$HOME/.rote/bin:$PATH" ;;
         esac
 
         SHELL_CONFIG=$(detect_shell_config)
-        if [ -n "$SHELL_CONFIG" ] && ! grep -qF '/.dex/bin' "$SHELL_CONFIG" 2>/dev/null; then
+        if [ -n "$SHELL_CONFIG" ] && ! grep -qF '/.rote/bin' "$SHELL_CONFIG" 2>/dev/null; then
             echo "" >> "$SHELL_CONFIG"
-            echo "# dex bundled runtimes (node, npm, npx, deno)" >> "$SHELL_CONFIG"
-            echo 'export PATH="$HOME/.dex/bin:$PATH"' >> "$SHELL_CONFIG"
+            echo "# rote bundled runtimes (node, npm, npx, deno)" >> "$SHELL_CONFIG"
+            echo 'export PATH="$HOME/.rote/bin:$PATH"' >> "$SHELL_CONFIG"
         fi
-        progress_ok "path" "~/.dex/bin in PATH"
+        progress_ok "path" "~/.rote/bin in PATH"
     fi
 
     # ── playwright ────────────────────────────────────────────────────────
@@ -280,13 +280,13 @@ install_dex() {
     fi
 
     # ── stdio servers ─────────────────────────────────────────────────────
-    if command -v dex >/dev/null 2>&1; then
+    if command -v rote >/dev/null 2>&1; then
         progress "stdio" "Initializing MCP servers..." \
-            dex stdio init-baseline || true
+            rote stdio init-baseline || true
     fi
 
     # ── deno + sdk (interactive) ──────────────────────────────────────────
-    if command -v dex >/dev/null 2>&1; then
+    if command -v rote >/dev/null 2>&1; then
         progress_clear
 
         if [ -n "$AUTO_YES" ]; then
@@ -302,10 +302,10 @@ install_dex() {
 
         if [ "$response" = "Y" ] || [ "$response" = "y" ]; then
             if progress "deno" "Installing Deno runtime..." \
-                dex deno install; then
+                rote deno install; then
 
                 progress "sdk" "Installing TypeScript SDK..." \
-                    dex sdk install || true
+                    rote sdk install || true
             fi
         else
             STEP_COUNT=$((STEP_COUNT + 1))
@@ -315,7 +315,7 @@ install_dex() {
     fi
 
     # ── shell setup (interactive) ─────────────────────────────────────────
-    if command -v dex >/dev/null 2>&1; then
+    if command -v rote >/dev/null 2>&1; then
         progress_clear
 
         if [ -n "$AUTO_YES" ]; then
@@ -331,21 +331,21 @@ install_dex() {
 
         if [ "$response" = "Y" ] || [ "$response" = "y" ]; then
             progress "shell" "Setting up shell integration..." \
-                dex shell-setup || true
+                rote shell-setup || true
 
             SHELL_CONFIG=$(detect_shell_config)
             SHELL_NAME=$(detect_shell_name)
 
             if [ -n "$SHELL_CONFIG" ]; then
-                if ! grep -qF "dex/shell/init.sh" "$SHELL_CONFIG" 2>/dev/null; then
+                if ! grep -qF "rote/shell/init.sh" "$SHELL_CONFIG" 2>/dev/null; then
                     echo "" >> "$SHELL_CONFIG"
-                    echo "# dex shell integration" >> "$SHELL_CONFIG"
-                    echo '[ -f ~/.dex/shell/init.sh ] && source ~/.dex/shell/init.sh' >> "$SHELL_CONFIG"
+                    echo "# rote shell integration" >> "$SHELL_CONFIG"
+                    echo '[ -f ~/.rote/shell/init.sh ] && source ~/.rote/shell/init.sh' >> "$SHELL_CONFIG"
                 fi
-                if [ -n "$SHELL_NAME" ] && ! grep -qF "dex completion" "$SHELL_CONFIG" 2>/dev/null; then
+                if [ -n "$SHELL_NAME" ] && ! grep -qF "rote completion" "$SHELL_CONFIG" 2>/dev/null; then
                     echo "" >> "$SHELL_CONFIG"
-                    echo "# dex completion" >> "$SHELL_CONFIG"
-                    echo "eval \"\$(dex completion $SHELL_NAME)\"" >> "$SHELL_CONFIG"
+                    echo "# rote completion" >> "$SHELL_CONFIG"
+                    echo "eval \"\$(rote completion $SHELL_NAME)\"" >> "$SHELL_CONFIG"
                 fi
             fi
         else
@@ -370,10 +370,10 @@ show_finale() {
 
     # Version + platform
     if [ "$failed_count" -gt 0 ]; then
-        printf "  ${GREEN}●${NC} dex v%s · %s · %d/%d steps\n" \
+        printf "  ${GREEN}●${NC} rote v%s · %s · %d/%d steps\n" \
             "$VERSION" "$PLATFORM_LABEL" "$success_count" "$STEP_COUNT" >&2
     else
-        printf "  ${GREEN}●${NC} dex v%s · %s · %d steps\n" \
+        printf "  ${GREEN}●${NC} rote v%s · %s · %d steps\n" \
             "$VERSION" "$PLATFORM_LABEL" "$STEP_COUNT" >&2
     fi
 
@@ -393,7 +393,7 @@ show_finale() {
 
     echo "" >&2
     printf "  ${DIM}─────────────────────────────────────────────${NC}\n" >&2
-    printf "  Then run:  ${GREEN}dex setup${NC}\n" >&2
+    printf "  Then run:  ${GREEN}rote setup${NC}\n" >&2
     printf "  ${DIM}           Adapters, tokens, AI wiring — done.${NC}\n" >&2
     echo "" >&2
     printf "  ${DIM}Full log:  %s${NC}\n" "$LOG_FILE" >&2
@@ -405,10 +405,10 @@ show_finale() {
 # ═══════════════════════════════════════════════════════════════════════════════
 main() {
     echo "" >&2
-    printf "  ${BOLD}dex installer${NC} ${DIM}· Execution Context Engineering${NC}\n" >&2
+    printf "  ${BOLD}rote installer${NC} ${DIM}· Execution Context Engineering${NC}\n" >&2
     echo "" >&2
 
-    log "=== dex installation started ==="
+    log "=== rote installation started ==="
 
     # Detect platform (instant)
     detect_platform
@@ -438,12 +438,12 @@ main() {
     log "Version: v$VERSION"
 
     # Install
-    install_dex
+    install_rote
 
     # Finale
     show_finale
 
-    log "=== dex installation complete ==="
+    log "=== rote installation complete ==="
 }
 
 main
