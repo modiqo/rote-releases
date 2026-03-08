@@ -393,8 +393,12 @@ show_finale() {
 
     echo "" >&2
     printf "  ${DIM}─────────────────────────────────────────────${NC}\n" >&2
-    printf "  Then run:  ${GREEN}rote setup${NC}\n" >&2
-    printf "  ${DIM}           Adapters, tokens, AI wiring — done.${NC}\n" >&2
+    printf "  ${BOLD}1.${NC} Run:  ${GREEN}rote human${NC}\n" >&2
+    printf "  ${DIM}         Understand how your agents can leverage rote.${NC}\n" >&2
+    echo "" >&2
+    printf "  ${BOLD}2.${NC} Run:  ${GREEN}rote setup${NC}\n" >&2
+    printf "  ${DIM}         Join the community and share your rotes.${NC}\n" >&2
+    printf "  ${DIM}─────────────────────────────────────────────${NC}\n" >&2
     echo "" >&2
     printf "  ${DIM}Full log:  %s${NC}\n" "$LOG_FILE" >&2
     echo "" >&2
