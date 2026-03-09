@@ -276,25 +276,83 @@ install_rote() {
     # ── playwright ────────────────────────────────────────────────────────
     # Playwright only officially supports specific Ubuntu LTS versions.
     # On unsupported distros, --with-deps hangs or fails installing system
-    # packages. Use a timeout and skip --with-deps on non-LTS Linux.
+    # packages. We detect this and offer to install deps manually.
     if command -v npx >/dev/null 2>&1; then
-        local pw_args="chrome"
+        local pw_supported_lts=false
+        local pw_unsupported_linux=false
+        local distro_ver=""
+        local distro_id=""
+
         if [ "$OS" = "linux" ]; then
-            # Check for supported Ubuntu LTS: 20.04, 22.04, 24.04
-            local distro_ver=""
             if [ -f /etc/os-release ]; then
                 distro_ver=$(. /etc/os-release && echo "$VERSION_ID")
+                distro_id=$(. /etc/os-release && echo "$ID")
             fi
-            case "$distro_ver" in
-                20.04|22.04|24.04) pw_args="--with-deps chrome" ;;
-                *) pw_args="chrome" ;; # Skip --with-deps on unsupported distros
+            case "$distro_id-$distro_ver" in
+                ubuntu-20.04|ubuntu-22.04|ubuntu-24.04) pw_supported_lts=true ;;
+                *) pw_unsupported_linux=true ;;
             esac
-        else
-            pw_args="--with-deps chrome"
         fi
 
-        progress "browser" "Installing Playwright Chrome..." \
-            timeout 120 npx -y @playwright/test install $pw_args || true
+        if [ "$pw_supported_lts" = true ] || [ "$OS" != "linux" ]; then
+            # Supported platform — install with system deps
+            progress "browser" "Installing Playwright Chrome..." \
+                timeout 120 npx -y @playwright/test install --with-deps chrome || true
+        else
+            # Unsupported Linux — install browser binary only (no --with-deps)
+            progress "browser" "Installing Playwright Chrome..." \
+                timeout 120 npx -y @playwright/test install chrome || true
+
+            # Check if the browser actually works
+            local pw_test_ok=false
+            if timeout 10 npx -y @playwright/test install --dry-run chrome >/dev/null 2>&1; then
+                pw_test_ok=true
+            fi
+
+            if [ "$pw_test_ok" = false ] && [ "$pw_unsupported_linux" = true ]; then
+                progress_clear
+                echo "" >&2
+                printf "  ${YELLOW}!${NC}  browser    Playwright may need system libraries for your OS\n" >&2
+
+                if [ "$distro_id" = "ubuntu" ]; then
+                    # Ubuntu but non-LTS — we know the right packages
+                    printf "  ${DIM}             Your OS (Ubuntu %s) isn't officially supported by Playwright.${NC}\n" "$distro_ver" >&2
+                    printf "  ${DIM}             System libraries with updated names can be installed manually.${NC}\n" >&2
+                    echo "" >&2
+
+                    if [ -n "$AUTO_YES" ]; then
+                        response="Y"
+                    else
+                        printf "  ${CYAN}?${NC} ${DIM}%s${NC}  %-10s Install Playwright system deps for Ubuntu %s? ${DIM}[Y/n]${NC} " \
+                            "$(elapsed)" "browser" "$distro_ver" >&2
+                        prompt_user response
+                        response=${response:-Y}
+                        printf "\r\033[K" >&2
+                    fi
+
+                    if [ "$response" = "Y" ] || [ "$response" = "y" ]; then
+                        progress "browser" "Installing Playwright system deps..." \
+                            sudo apt-get update -qq && \
+                        sudo apt-get install -y -qq \
+                            libicu76 libxml2-16 libevent-2.1-7t64 libglib2.0-0t64 \
+                            libnspr4 libnss3 libdbus-1-3 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+                            libcups2t64 libexpat1 libxcb1 libxkbcommon0 libatspi2.0-0t64 \
+                            libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 \
+                            libgbm1 libcairo2 libpango-1.0-0 libasound2t64 libdrm2 \
+                            libxshmfence1 libgtk-3-0t64 libgtk-4-1 libxslt1.1 libwoff1 \
+                            libwebpdemux2 libharfbuzz-icu0 libenchant-2-2 libsecret-1-0 \
+                            libhyphen0 libwayland-server0 libgles2 2>>"$LOG_FILE" || true
+                    else
+                        log "· [browser] Skipped system deps install"
+                    fi
+                else
+                    # Non-Ubuntu Linux — just advise
+                    printf "  ${DIM}             Your distro (%s %s) isn't supported by Playwright.${NC}\n" "$distro_id" "$distro_ver" >&2
+                    printf "  ${DIM}             Browser downloaded but may not run without system libraries.${NC}\n" >&2
+                    printf "  ${DIM}             See: https://playwright.dev/docs/intro#system-requirements${NC}\n" >&2
+                fi
+            fi
+        fi
     fi
 
     # ── stdio servers ─────────────────────────────────────────────────────
