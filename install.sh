@@ -274,9 +274,27 @@ install_rote() {
     fi
 
     # ── playwright ────────────────────────────────────────────────────────
+    # Playwright only officially supports specific Ubuntu LTS versions.
+    # On unsupported distros, --with-deps hangs or fails installing system
+    # packages. Use a timeout and skip --with-deps on non-LTS Linux.
     if command -v npx >/dev/null 2>&1; then
+        local pw_args="chrome"
+        if [ "$OS" = "linux" ]; then
+            # Check for supported Ubuntu LTS: 20.04, 22.04, 24.04
+            local distro_ver=""
+            if [ -f /etc/os-release ]; then
+                distro_ver=$(. /etc/os-release && echo "$VERSION_ID")
+            fi
+            case "$distro_ver" in
+                20.04|22.04|24.04) pw_args="--with-deps chrome" ;;
+                *) pw_args="chrome" ;; # Skip --with-deps on unsupported distros
+            esac
+        else
+            pw_args="--with-deps chrome"
+        fi
+
         progress "browser" "Installing Playwright Chrome..." \
-            npx -y @playwright/test install --with-deps chrome || true
+            timeout 120 npx -y @playwright/test install $pw_args || true
     fi
 
     # ── stdio servers ─────────────────────────────────────────────────────
