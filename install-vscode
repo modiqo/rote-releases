@@ -4,10 +4,10 @@ set -e
 # rote VS Code extension installer
 # Usage: curl -fsSL https://rote.sh/install-vscode | bash
 #
-# Downloads the latest .vsix from GitHub releases and installs it.
+# Downloads the latest .vsix from rote-releases and installs it.
 # Requires: code (VS Code) on PATH.
 
-REPO="modiqo/rote-vscode"
+REPO="modiqo/rote-releases"
 BOLD='\033[1m'
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -25,32 +25,26 @@ if ! command -v code >/dev/null 2>&1; then
     exit 1
 fi
 
-# Get latest release tag
+# Get latest vscode release tag (tags prefixed with "vscode-v")
 printf "  ${DIM}Resolving latest version...${NC}\r"
-TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-    | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases" 2>/dev/null \
+    | grep '"tag_name"' | grep 'vscode-v' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
 
 if [ -z "$TAG" ]; then
-    # No releases yet — download from main branch artifacts
-    printf "  ${DIM}No releases found. Downloading from main branch...${NC}\n"
-    DOWNLOAD_URL="https://github.com/$REPO/raw/main/modiqo-0.1.0.vsix"
-    VSIX_FILE="/tmp/rote-vscode.vsix"
+    printf "  ${RED}✗${NC} No VS Code extension releases found.\n"
+    printf "  ${DIM}  Check https://github.com/$REPO/releases${NC}\n"
+    exit 1
+fi
 
-    if ! curl -fsSL "$DOWNLOAD_URL" -o "$VSIX_FILE" 2>/dev/null; then
-        printf "  ${RED}✗${NC} Download failed.\n"
-        exit 1
-    fi
-else
-    VERSION="${TAG#v}"
-    printf "  ${GREEN}●${NC} Found v${VERSION}\n"
+VERSION="${TAG#vscode-v}"
+printf "  ${GREEN}●${NC} Found v${VERSION}\n"
 
-    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/modiqo-${VERSION}.vsix"
-    VSIX_FILE="/tmp/rote-vscode-${VERSION}.vsix"
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/modiqo-${VERSION}.vsix"
+VSIX_FILE="/tmp/rote-vscode-${VERSION}.vsix"
 
-    if ! curl -fsSL "$DOWNLOAD_URL" -o "$VSIX_FILE"; then
-        printf "  ${RED}✗${NC} Download failed: $DOWNLOAD_URL\n"
-        exit 1
-    fi
+if ! curl -fsSL "$DOWNLOAD_URL" -o "$VSIX_FILE"; then
+    printf "  ${RED}✗${NC} Download failed: $DOWNLOAD_URL\n"
+    exit 1
 fi
 
 # Install
