@@ -345,7 +345,7 @@ install_rote() {
                 if [ -n "$SHELL_NAME" ] && ! grep -qF "rote completion" "$SHELL_CONFIG" 2>/dev/null; then
                     echo "" >> "$SHELL_CONFIG"
                     echo "# rote completion" >> "$SHELL_CONFIG"
-                    echo "eval \"\$(rote completion $SHELL_NAME)\"" >> "$SHELL_CONFIG"
+                    echo "command -v rote >/dev/null 2>&1 && eval \"\$(rote completion $SHELL_NAME)\"" >> "$SHELL_CONFIG"
                 fi
             fi
         else
