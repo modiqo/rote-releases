@@ -185,6 +185,47 @@ detect_platform() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Detect Playwright browser
+# ═══════════════════════════════════════════════════════════════════════════════
+detect_playwright_browser() {
+    if [ -n "$ROTE_PLAYWRIGHT_BROWSER" ]; then
+        echo "$ROTE_PLAYWRIGHT_BROWSER"
+        return
+    fi
+
+    local browser="chrome"
+
+    if [ "$OS" = "linux" ] && [ -f /etc/os-release ]; then
+        local distro_id=""
+        local version_id=""
+
+        while IFS='=' read -r key value; do
+            value="${value%\"}"
+            value="${value#\"}"
+            case "$key" in
+                ID) distro_id="$value" ;;
+                VERSION_ID) version_id="$value" ;;
+            esac
+        done < /etc/os-release
+
+        if [ "$distro_id" = "ubuntu" ]; then
+            case "$version_id" in
+                22.04|24.04|26.04)
+                    browser="chrome"
+                    ;;
+                *)
+                    browser="firefox"
+                    log "Ubuntu $version_id is not in Playwright's supported list for Chrome"
+                    log "Falling back to Firefox"
+                    ;;
+            esac
+        fi
+    fi
+
+    echo "$browser"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Install sequence
 # ═══════════════════════════════════════════════════════════════════════════════
 install_rote() {
@@ -275,8 +316,14 @@ install_rote() {
 
     # ── playwright ────────────────────────────────────────────────────────
     if command -v npx >/dev/null 2>&1; then
-        progress "browser" "Installing Playwright Chrome..." \
-            npx -y @playwright/test install --with-deps chrome || true
+        PW_BROWSER=$(detect_playwright_browser)
+        if [ "$PW_BROWSER" = "firefox" ]; then
+            progress "browser" "Installing Playwright Firefox..." \
+                npx -y @playwright/test install --with-deps firefox || true
+        else
+            progress "browser" "Installing Playwright Chrome..." \
+                npx -y @playwright/test install --with-deps chrome || true
+        fi
     fi
 
     # ── stdio servers ─────────────────────────────────────────────────────
