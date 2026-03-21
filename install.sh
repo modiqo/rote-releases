@@ -324,13 +324,19 @@ install_rote() {
 
     # ── playwright ────────────────────────────────────────────────────────
     if command -v npx >/dev/null 2>&1; then
-        PW_BROWSER=$(detect_playwright_browser)
-        if [ "$PW_BROWSER" = "firefox" ]; then
-            progress "browser" "Installing Playwright Firefox..." \
-                npx -y @playwright/test install --with-deps firefox || true
+        # Chrome/Firefox have no arm64 Linux binaries — use chromium instead
+        if [ "$OS" = "linux" ] && [ "$ARCH" = "aarch64" ]; then
+            progress "browser" "Installing Playwright Chromium (arm64)..." \
+                npx -y @playwright/test install --with-deps chromium || true
         else
-            progress "browser" "Installing Playwright Chrome..." \
-                npx -y @playwright/test install --with-deps chrome || true
+            PW_BROWSER=$(detect_playwright_browser)
+            if [ "$PW_BROWSER" = "firefox" ]; then
+                progress "browser" "Installing Playwright Firefox..." \
+                    npx -y @playwright/test install --with-deps firefox || true
+            else
+                progress "browser" "Installing Playwright Chrome..." \
+                    npx -y @playwright/test install --with-deps chrome || true
+            fi
         fi
     fi
 
