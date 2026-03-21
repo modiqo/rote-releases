@@ -60,18 +60,30 @@ progress() {
     local out_file=$(mktemp /tmp/rote_out.XXXXXX)
     local spinner_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 
-    # Run command in background
+    # Run command in background, tee stdout so we can tail it live
     "$@" > "$out_file" 2>>"$LOG_FILE" &
     local cmd_pid=$!
     local i=0
+    local last_line=""
 
     # Hide cursor
     printf "\033[?25h\033[?25l" >&2
 
     while kill -0 "$cmd_pid" 2>/dev/null; do
         local frame="${spinner_frames[$((i % ${#spinner_frames[@]}))]}"
-        printf "\r  ${CYAN}%s${NC} ${DIM}%s${NC}  %-10s ${DIM}%s${NC}\033[K" \
-            "$frame" "$(elapsed)" "$phase" "$message" >&2
+        # Pick up latest stdout line for sub-status
+        local cur_line
+        cur_line=$(tail -1 "$out_file" 2>/dev/null | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g')
+        if [ -n "$cur_line" ] && [ "$cur_line" != "$last_line" ]; then
+            last_line="$cur_line"
+        fi
+        local sub=""
+        if [ -n "$last_line" ]; then
+            # Truncate to 60 chars so it fits on one line
+            sub=" ${DIM}› ${last_line:0:60}${NC}"
+        fi
+        printf "\r  ${CYAN}%s${NC} ${DIM}%s${NC}  %-10s ${DIM}%s${NC}%s\033[K" \
+            "$frame" "$(elapsed)" "$phase" "$message" "$sub" >&2
         sleep 0.08
         i=$((i + 1))
     done
