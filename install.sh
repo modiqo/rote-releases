@@ -280,8 +280,16 @@ install_rote() {
 
     # ── verify ────────────────────────────────────────────────────────────
     if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
-        FAILED_STEPS+=("path · $INSTALL_DIR not in PATH")
-        STEP_COUNT=$((STEP_COUNT + 1))
+        # Auto-fix: add INSTALL_DIR to shell config so next shell has it in PATH
+        SHELL_CONFIG=$(detect_shell_config)
+        if [ -n "$SHELL_CONFIG" ] && ! grep -qF "$INSTALL_DIR" "$SHELL_CONFIG" 2>/dev/null; then
+            echo "" >> "$SHELL_CONFIG"
+            echo "# rote CLI" >> "$SHELL_CONFIG"
+            echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_CONFIG"
+        fi
+        # Export for current session too
+        export PATH="$INSTALL_DIR:$PATH"
+        progress_ok "path" "$INSTALL_DIR added to PATH (restart shell or run: source $SHELL_CONFIG)"
     fi
 
     if command -v rote >/dev/null 2>&1; then
@@ -494,3 +502,4 @@ main() {
 }
 
 main
+
