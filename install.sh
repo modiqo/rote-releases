@@ -323,7 +323,9 @@ install_rote() {
     fi
 
     # ── playwright ────────────────────────────────────────────────────────
-    if command -v npx >/dev/null 2>&1; then
+    if [ -n "$ROTE_SKIP_BROWSER" ]; then
+        progress_ok "browser" "Skipped (ROTE_SKIP_BROWSER set)"
+    elif command -v npx >/dev/null 2>&1; then
         # Chrome/Firefox have no arm64 Linux binaries — use chromium instead
         if [ "$OS" = "linux" ] && [ "$ARCH" = "aarch64" ]; then
             progress "browser" "Installing Playwright Chromium (arm64)..." \
