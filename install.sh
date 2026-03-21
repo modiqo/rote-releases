@@ -344,8 +344,13 @@ install_rote() {
     fi
 
     # ── playwright ────────────────────────────────────────────────────────
+    # On Linux, browser install requires sudo for system deps and may hang
+    # in non-interactive environments. Deferred by default — opt in with
+    # ROTE_INSTALL_BROWSER=1, or run: npx @playwright/test install --with-deps chromium
     if [ -n "$ROTE_SKIP_BROWSER" ]; then
         progress_ok "browser" "Skipped (ROTE_SKIP_BROWSER set)"
+    elif [ "$OS" = "linux" ] && [ -z "$ROTE_INSTALL_BROWSER" ]; then
+        progress_ok "browser" "Deferred (run: npx @playwright/test install --with-deps chromium)"
     elif command -v npx >/dev/null 2>&1; then
         # Chrome/Firefox have no arm64 Linux binaries — use chromium instead
         if [ "$OS" = "linux" ] && [ "$ARCH" = "aarch64" ]; then
