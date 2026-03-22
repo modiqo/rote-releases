@@ -65,37 +65,16 @@ progress() {
     local cmd_pid=$!
     local i=0
 
-    # Only animate if stderr is a TTY (not when piped via curl | bash)
-    if [ -t 2 ]; then
-        local last_line=""
-        # Hide cursor
-        printf "\033[?25h\033[?25l" >&2
+    # Hide cursor
+    printf "\033[?25h\033[?25l" >&2
 
-        while kill -0 "$cmd_pid" 2>/dev/null; do
-            local frame="${spinner_frames[$((i % ${#spinner_frames[@]}))]}"
-            # Pick up latest stdout line, strip both real and literal escape sequences
-            local cur_line
-            cur_line=$(tail -1 "$out_file" 2>/dev/null \
-                | tr -d '\r' \
-                | sed 's/\x1b\[[0-9;]*[mGKHF]//g; s/\\033\[[0-9;]*[mGKHF]//g' \
-                | sed 's/^[[:space:]]*//')
-            if [ -n "$cur_line" ] && [ "$cur_line" != "$last_line" ]; then
-                last_line="$cur_line"
-            fi
-            local sub=""
-            if [ -n "$last_line" ]; then
-                sub=" ${DIM}› ${last_line:0:55}${NC}"
-            fi
-            printf "\r  ${CYAN}%s${NC} ${DIM}%s${NC}  %-10s ${DIM}%s${NC}%s\033[K" \
-                "$frame" "$(elapsed)" "$phase" "$message" "$sub" >&2
-            sleep 0.08
-            i=$((i + 1))
-        done
-    else
-        # Non-TTY (curl | bash): print one static line, then wait
-        printf "  * %s  %s\n" "$phase" "$message" >&2
-        wait "$cmd_pid" 2>/dev/null || true
-    fi
+    while kill -0 "$cmd_pid" 2>/dev/null; do
+        local frame="${spinner_frames[$((i % ${#spinner_frames[@]}))]}"
+        printf "\r  ${CYAN}%s${NC} ${DIM}%s${NC}  %-10s ${DIM}%s${NC}\033[K" \
+            "$frame" "$(elapsed)" "$phase" "$message" >&2
+        sleep 0.08
+        i=$((i + 1))
+    done
 
     local rc=0
     wait "$cmd_pid" 2>/dev/null || rc=$?
@@ -308,9 +287,8 @@ install_rote() {
             echo "# rote CLI" >> "$SHELL_CONFIG"
             echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_CONFIG"
         fi
-        # Export for current session too
         export PATH="$INSTALL_DIR:$PATH"
-        progress_ok "path" "$INSTALL_DIR added to PATH (restart shell or run: source $SHELL_CONFIG)"
+        progress_ok "path" "$INSTALL_DIR added to PATH (restart shell or: source $SHELL_CONFIG)"
     fi
 
     if command -v rote >/dev/null 2>&1; then
@@ -536,4 +514,3 @@ main() {
 }
 
 main
-
