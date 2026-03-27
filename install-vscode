@@ -2,7 +2,7 @@
 set -e
 
 # rote VS Code extension installer
-# Usage: curl -fsSL https://rote.sh/install-vscode | bash
+# Usage: curl -fsSL https://getrote.dev/install-vscode | bash
 #
 # Downloads the latest .vsix from modiqo/rote-releases and installs it.
 # VS Code releases are published as pre-releases with "vscode-v{VERSION}" tags.
@@ -40,7 +40,7 @@ fi
 VERSION="${TAG#vscode-v}"
 printf "  ${GREEN}●${NC} Found v${VERSION}\n"
 
-DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/modiqo-${VERSION}.vsix"
+DOWNLOAD_URL="https://releases.getrote.dev/${TAG}/modiqo-${VERSION}.vsix"
 VSIX_FILE="/tmp/rote-vscode-${VERSION}.vsix"
 
 if ! curl -fsSL "$DOWNLOAD_URL" -o "$VSIX_FILE"; then
