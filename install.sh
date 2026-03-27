@@ -324,7 +324,7 @@ collect_preferences() {
 # Install sequence
 # ═══════════════════════════════════════════════════════════════════════════════
 install_rote() {
-    local download_url="https://releases.getrote.dev/v${VERSION}/${ARTIFACT}.${ARCHIVE_EXT}"
+    local download_url="https://github.com/$REPO/releases/download/v${VERSION}/${ARTIFACT}.${ARCHIVE_EXT}"
     local tmp_dir=$(mktemp -d)
     local archive_file="$tmp_dir/rote.${ARCHIVE_EXT}"
 
