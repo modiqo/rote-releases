@@ -251,13 +251,49 @@ install_rote() {
         progress_ok "verify" "Binary installed (restart shell to use)"
     fi
 
-    # ── node.js ───────────────────────────────────────────────────────────
+    # ── parallel group A: node + stdio + deno ────────────────────────────
+    # These three only need the rote binary — run them all at once.
     if command -v rote >/dev/null 2>&1; then
-        progress "node" "Setting up Node.js runtime..." \
-            rote node install || true
+        local node_log="$LOG_DIR/node.log"
+        local stdio_log="$LOG_DIR/stdio.log"
+        local deno_log="$LOG_DIR/deno.log"
+
+        rote node install   > "$node_log"  2>&1 &  local pid_node=$!
+        rote stdio init-baseline > "$stdio_log" 2>&1 &  local pid_stdio=$!
+        rote deno install   > "$deno_log"  2>&1 &  local pid_deno=$!
+
+        local spinner_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+        local i=0
+        printf "\033[?25l" >&2
+        while kill -0 "$pid_node" 2>/dev/null || kill -0 "$pid_stdio" 2>/dev/null || kill -0 "$pid_deno" 2>/dev/null; do
+            local frame="${spinner_frames[$((i % ${#spinner_frames[@]}))]}"
+            printf "\r  ${CYAN}%s${NC} ${DIM}%s${NC}  %-10s ${DIM}%s${NC}\033[K" \
+                "$frame" "$(elapsed)" "setup" "node · stdio · deno  (parallel)" >&2
+            sleep 0.08
+            i=$((i + 1))
+        done
+        printf "\033[?25h" >&2
+
+        local rc_node=0; wait "$pid_node"  || rc_node=$?
+        local rc_stdio=0; wait "$pid_stdio" || rc_stdio=$?
+        local rc_deno=0; wait "$pid_deno"  || rc_deno=$?
+
+        cat "$node_log"  >> "$LOG_FILE"
+        cat "$stdio_log" >> "$LOG_FILE"
+        cat "$deno_log"  >> "$LOG_FILE"
+
+        [ "$rc_node"  = "0" ] && { COMPLETED_STEPS+=("node");  STEP_COUNT=$((STEP_COUNT+1)); log "✓ [node] done"; } \
+                               || { FAILED_STEPS+=("node · see $node_log"); STEP_COUNT=$((STEP_COUNT+1)); log "✗ [node]"; }
+        [ "$rc_stdio" = "0" ] && { COMPLETED_STEPS+=("stdio"); STEP_COUNT=$((STEP_COUNT+1)); log "✓ [stdio] done"; } \
+                               || { FAILED_STEPS+=("stdio · see $stdio_log"); STEP_COUNT=$((STEP_COUNT+1)); log "✗ [stdio]"; }
+        [ "$rc_deno"  = "0" ] && { COMPLETED_STEPS+=("deno");  STEP_COUNT=$((STEP_COUNT+1)); log "✓ [deno] done"; } \
+                               || { FAILED_STEPS+=("deno · see $deno_log"); STEP_COUNT=$((STEP_COUNT+1)); log "✗ [deno]"; }
+
+        printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
+            "$(elapsed)" "setup" "node · stdio · deno  done" >&2
     fi
 
-    # ── path config ───────────────────────────────────────────────────────
+    # ── path config (needs node done) ─────────────────────────────────────
     if [ -d "$HOME/.rote/bin" ]; then
         case ":$PATH:" in
             *":$HOME/.rote/bin:"*) ;;
@@ -273,48 +309,47 @@ install_rote() {
         progress_ok "path" "~/.rote/bin in PATH"
     fi
 
-    # ── playwright ────────────────────────────────────────────────────────
-    if command -v npx >/dev/null 2>&1; then
-        progress "browser" "Installing Playwright Chrome..." \
-            npx -y @playwright/test install --with-deps chrome || true
-    fi
-
-    # ── stdio servers ─────────────────────────────────────────────────────
+    # ── parallel group B: playwright + sdk ────────────────────────────────
+    # playwright needs npx (from node); sdk needs deno — both now done.
     if command -v rote >/dev/null 2>&1; then
-        progress "stdio" "Initializing MCP servers..." \
-            rote stdio init-baseline || true
-    fi
+        local pw_log="$LOG_DIR/playwright.log"
+        local sdk_log="$LOG_DIR/sdk.log"
 
-    # ── deno + sdk (interactive) ──────────────────────────────────────────
-    if command -v rote >/dev/null 2>&1; then
-        progress_clear
+        if command -v npx >/dev/null 2>&1; then
+            npx -y @playwright/test install --with-deps chrome > "$pw_log" 2>&1 &
+            local pid_pw=$!
+        fi
+        rote sdk install > "$sdk_log" 2>&1 &
+        local pid_sdk=$!
 
-        if [ -n "$AUTO_YES" ]; then
-            response="Y"
-        else
-            printf "\r  ${CYAN}?${NC} ${DIM}%s${NC}  %-10s Install Deno runtime for TypeScript flows? ${DIM}[Y/n]${NC} " \
-                "$(elapsed)" "deno" >&2
-            prompt_user response
-            response=${response:-Y}
-            # Clear the prompt line so next progress overwrites it
-            printf "\r\033[K" >&2
+        local i=0
+        printf "\033[?25l" >&2
+        while { [ -n "${pid_pw:-}" ] && kill -0 "$pid_pw" 2>/dev/null; } || kill -0 "$pid_sdk" 2>/dev/null; do
+            local frame="${spinner_frames[$((i % ${#spinner_frames[@]}))]}"
+            printf "\r  ${CYAN}%s${NC} ${DIM}%s${NC}  %-10s ${DIM}%s${NC}\033[K" \
+                "$frame" "$(elapsed)" "setup" "browser · sdk  (parallel)" >&2
+            sleep 0.08
+            i=$((i + 1))
+        done
+        printf "\033[?25h" >&2
+
+        if [ -n "${pid_pw:-}" ]; then
+            local rc_pw=0; wait "$pid_pw" || rc_pw=$?
+            cat "$pw_log" >> "$LOG_FILE"
+            [ "$rc_pw" = "0" ] && { COMPLETED_STEPS+=("browser"); STEP_COUNT=$((STEP_COUNT+1)); log "✓ [browser] done"; } \
+                                || { FAILED_STEPS+=("browser · see $pw_log"); STEP_COUNT=$((STEP_COUNT+1)); log "✗ [browser]"; }
         fi
 
-        if [ "$response" = "Y" ] || [ "$response" = "y" ]; then
-            if progress "deno" "Installing Deno runtime..." \
-                rote deno install; then
+        local rc_sdk=0; wait "$pid_sdk" || rc_sdk=$?
+        cat "$sdk_log" >> "$LOG_FILE"
+        [ "$rc_sdk" = "0" ] && { COMPLETED_STEPS+=("sdk"); STEP_COUNT=$((STEP_COUNT+1)); log "✓ [sdk] done"; } \
+                             || { FAILED_STEPS+=("sdk · see $sdk_log"); STEP_COUNT=$((STEP_COUNT+1)); log "✗ [sdk]"; }
 
-                progress "sdk" "Installing TypeScript SDK..." \
-                    rote sdk install || true
-            fi
-        else
-            STEP_COUNT=$((STEP_COUNT + 1))
-            COMPLETED_STEPS+=("deno")
-            log "· [deno] Skipped"
-        fi
+        printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
+            "$(elapsed)" "setup" "browser · sdk  done" >&2
     fi
 
-    # ── shell setup (interactive) ─────────────────────────────────────────
+    # ── shell setup ───────────────────────────────────────────────────────
     if command -v rote >/dev/null 2>&1; then
         progress_clear
 
@@ -325,7 +360,6 @@ install_rote() {
                 "$(elapsed)" "shell" >&2
             prompt_user response
             response=${response:-Y}
-            # Clear the prompt line so next progress overwrites it
             printf "\r\033[K" >&2
         fi
 
