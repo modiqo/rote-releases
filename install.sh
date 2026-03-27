@@ -116,6 +116,65 @@ progress_clear() {
     printf "\r\033[K" >&2
 }
 
+# ─── Background job tracking ─────────────────────────────────────────────────
+#
+# Jobs started with bg_start run silently. bg_collect waits for them,
+# records the result, and prints a single status line. This lets multiple
+# downloads overlap while the foreground spinner covers the longest one.
+#
+# bg_start "phase" "message" command [args...]
+#   Forks the command, writes pid/meta to /tmp/rote_bg_<phase>.
+#
+# bg_collect "phase"
+#   Waits for the job, prints ● or ✗, returns exit code of the job.
+
+bg_start() {
+    local phase="$1"; shift
+    local message="$1"; shift
+    local pid_file="/tmp/rote_bg_${phase}.pid"
+    local out_file="/tmp/rote_bg_${phase}.out"
+    local msg_file="/tmp/rote_bg_${phase}.msg"
+
+    echo "$message" > "$msg_file"
+    log "→ [bg:$phase] starting: $*"
+
+    "$@" > "$out_file" 2>>"$LOG_FILE" &
+    echo $! > "$pid_file"
+}
+
+bg_collect() {
+    local phase="$1"
+    local pid_file="/tmp/rote_bg_${phase}.pid"
+    local out_file="/tmp/rote_bg_${phase}.out"
+    local msg_file="/tmp/rote_bg_${phase}.msg"
+
+    local pid message rc=0
+    pid=$(cat "$pid_file" 2>/dev/null || echo "")
+    message=$(cat "$msg_file" 2>/dev/null || echo "$phase")
+
+    if [ -n "$pid" ]; then
+        wait "$pid" 2>/dev/null || rc=$?
+    fi
+
+    rm -f "$pid_file" "$out_file" "$msg_file"
+
+    STEP_COUNT=$((STEP_COUNT + 1))
+
+    if [ "$rc" = "0" ]; then
+        COMPLETED_STEPS+=("$phase")
+        log "✓ [bg:$phase] $message"
+        printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K" \
+            "$(elapsed)" "$phase" "$message" >&2
+    else
+        FAILED_STEPS+=("$phase · $message")
+        log "✗ [bg:$phase] $message (exit $rc)"
+        printf "\r  ${RED}✗${NC} ${DIM}%s${NC}  %-10s %s\033[K" \
+            "$(elapsed)" "$phase" "$message" >&2
+    fi
+
+    return "$rc"
+}
+
 # ─── Read user input (works in curl | bash) ──────────────────────────────────
 prompt_user() {
     if [ -t 0 ]; then
@@ -185,6 +244,83 @@ detect_platform() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Detect Playwright browser
+# ═══════════════════════════════════════════════════════════════════════════════
+detect_playwright_browser() {
+    if [ -n "$ROTE_PLAYWRIGHT_BROWSER" ]; then
+        echo "$ROTE_PLAYWRIGHT_BROWSER"
+        return
+    fi
+
+    local browser="chrome"
+
+    if [ "$OS" = "linux" ] && [ -f /etc/os-release ]; then
+        local distro_id=""
+        local version_id=""
+
+        while IFS='=' read -r key value; do
+            value="${value%\"}"
+            value="${value#\"}"
+            case "$key" in
+                ID) distro_id="$value" ;;
+                VERSION_ID) version_id="$value" ;;
+            esac
+        done < /etc/os-release
+
+        if [ "$distro_id" = "ubuntu" ]; then
+            case "$version_id" in
+                22.04|24.04|26.04)
+                    browser="chrome"
+                    ;;
+                *)
+                    browser="firefox"
+                    log "Ubuntu $version_id is not in Playwright's supported list for Chrome"
+                    log "Falling back to Firefox"
+                    ;;
+            esac
+        fi
+    fi
+
+    echo "$browser"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Collect user preferences upfront (interactive only)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Populated by collect_preferences(). Read by install_rote().
+WANT_DENO=""
+WANT_SHELL=""
+
+collect_preferences() {
+    if [ -n "$AUTO_YES" ]; then
+        WANT_DENO="Y"
+        WANT_SHELL="Y"
+        return
+    fi
+
+    # Only ask if rote will be available to run deno/shell commands.
+    # At this point the binary isn't installed yet, but we know we're about
+    # to install it — ask now so downloads can overlap.
+    echo "" >&2
+    printf "  ${BOLD}Quick setup questions${NC} ${DIM}(your answers let us fetch everything at once)${NC}\n" >&2
+    echo "" >&2
+
+    progress_clear
+    printf "  ${CYAN}?${NC}  %-10s Install Deno runtime for TypeScript flows? ${DIM}[Y/n]${NC} " \
+        "deno" >&2
+    prompt_user WANT_DENO
+    WANT_DENO=${WANT_DENO:-Y}
+
+    printf "  ${CYAN}?${NC}  %-10s Set up shell integration (completions, hooks)? ${DIM}[Y/n]${NC} " \
+        "shell" >&2
+    prompt_user WANT_SHELL
+    WANT_SHELL=${WANT_SHELL:-Y}
+
+    echo "" >&2
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Install sequence
 # ═══════════════════════════════════════════════════════════════════════════════
 install_rote() {
@@ -237,10 +373,16 @@ install_rote() {
     rm -rf "$tmp_dir"
     progress_ok "install" "Installed to $BINARY_PATH"
 
-    # ── verify ────────────────────────────────────────────────────────────
+    # ── verify + PATH ─────────────────────────────────────────────────────
     if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
-        FAILED_STEPS+=("path · $INSTALL_DIR not in PATH")
-        STEP_COUNT=$((STEP_COUNT + 1))
+        SHELL_CONFIG=$(detect_shell_config)
+        if [ -n "$SHELL_CONFIG" ] && ! grep -qF "$INSTALL_DIR" "$SHELL_CONFIG" 2>/dev/null; then
+            echo "" >> "$SHELL_CONFIG"
+            echo "# rote CLI" >> "$SHELL_CONFIG"
+            echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_CONFIG"
+        fi
+        export PATH="$INSTALL_DIR:$PATH"
+        progress_ok "path" "$INSTALL_DIR added to PATH (restart shell or: source $SHELL_CONFIG)"
     fi
 
     if command -v rote >/dev/null 2>&1; then
@@ -251,119 +393,135 @@ install_rote() {
         progress_ok "verify" "Binary installed (restart shell to use)"
     fi
 
-    # ── parallel group A: node + stdio + deno ────────────────────────────
-    # These three only need the rote binary — run them all at once.
+    # ══════════════════════════════════════════════════════════════════════
+    # PARALLEL PHASE
+    #
+    # Dependency graph:
+    #   node  ──────────────────────────────────────→ playwright
+    #   deno  ──────────────────→ sdk
+    #   stdio (no dependencies)
+    #
+    # Strategy A: collect user answers upfront (done in collect_preferences),
+    # then fire all independent jobs together. The visible spinner covers
+    # whichever job takes longest. Background jobs log to $LOG_FILE.
+    # bg_collect prints a newline per job so the terminal builds up a
+    # clean list of completed steps.
+    # ══════════════════════════════════════════════════════════════════════
     if command -v rote >/dev/null 2>&1; then
-        local node_log="$LOG_DIR/node.log"
-        local stdio_log="$LOG_DIR/stdio.log"
-        local deno_log="$LOG_DIR/deno.log"
 
-        rote node install   > "$node_log"  2>&1 &  local pid_node=$!
-        rote stdio init-baseline > "$stdio_log" 2>&1 &  local pid_stdio=$!
-        rote deno install   > "$deno_log"  2>&1 &  local pid_deno=$!
+        echo "" >&2
+        printf "  ${DIM}Racing the clock — node · deno · stdio fetching simultaneously${NC}\n" >&2
+        echo "" >&2
+
+        # ── fire background jobs ──────────────────────────────────────────
+
+        # node: always install (playwright depends on it)
+        bg_start "node" "Setting up Node.js runtime..." \
+            rote node install
+
+        # deno: only if user said yes
+        if [ "$WANT_DENO" = "Y" ] || [ "$WANT_DENO" = "y" ]; then
+            bg_start "deno" "Installing Deno runtime..." \
+                rote deno install
+        fi
+
+        # stdio: independent, fire immediately
+        bg_start "stdio" "Initializing MCP servers..." \
+            rote stdio init-baseline
+
+        # ── spinner covers the parallel phase ─────────────────────────────
+        # Show a combined waiting spinner while all background jobs run.
+        # We poll until all pid files are gone (jobs complete).
 
         local spinner_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
         local i=0
-        printf "\033[?25l" >&2
-        while kill -0 "$pid_node" 2>/dev/null || kill -0 "$pid_stdio" 2>/dev/null || kill -0 "$pid_deno" 2>/dev/null; do
+        printf "\033[?25l" >&2  # hide cursor
+
+        while true; do
+            # Check if any bg job is still running
+            local any_running=0
+            for phase in node deno stdio; do
+                local pid_file="/tmp/rote_bg_${phase}.pid"
+                if [ -f "$pid_file" ]; then
+                    local pid
+                    pid=$(cat "$pid_file" 2>/dev/null || echo "")
+                    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                        any_running=1
+                        break
+                    fi
+                fi
+            done
+            [ "$any_running" = "0" ] && break
+
             local frame="${spinner_frames[$((i % ${#spinner_frames[@]}))]}"
             printf "\r  ${CYAN}%s${NC} ${DIM}%s${NC}  %-10s ${DIM}%s${NC}\033[K" \
-                "$frame" "$(elapsed)" "setup" "node · stdio · deno  (parallel)" >&2
+                "$frame" "$(elapsed)" "racing" "node · deno · stdio" >&2
             sleep 0.08
             i=$((i + 1))
         done
-        printf "\033[?25h" >&2
 
-        local rc_node=0; wait "$pid_node"  || rc_node=$?
-        local rc_stdio=0; wait "$pid_stdio" || rc_stdio=$?
-        local rc_deno=0; wait "$pid_deno"  || rc_deno=$?
+        printf "\033[?25h" >&2  # restore cursor
+        printf "\r\033[K" >&2   # clear spinner line
 
-        cat "$node_log"  >> "$LOG_FILE"
-        cat "$stdio_log" >> "$LOG_FILE"
-        cat "$deno_log"  >> "$LOG_FILE"
+        # ── collect results (prints one line per job) ─────────────────────
+        bg_collect "node"  || true
 
-        [ "$rc_node"  = "0" ] && { COMPLETED_STEPS+=("node");  STEP_COUNT=$((STEP_COUNT+1)); log "✓ [node] done"; } \
-                               || { FAILED_STEPS+=("node · see $node_log"); STEP_COUNT=$((STEP_COUNT+1)); log "✗ [node]"; }
-        [ "$rc_stdio" = "0" ] && { COMPLETED_STEPS+=("stdio"); STEP_COUNT=$((STEP_COUNT+1)); log "✓ [stdio] done"; } \
-                               || { FAILED_STEPS+=("stdio · see $stdio_log"); STEP_COUNT=$((STEP_COUNT+1)); log "✗ [stdio]"; }
-        [ "$rc_deno"  = "0" ] && { COMPLETED_STEPS+=("deno");  STEP_COUNT=$((STEP_COUNT+1)); log "✓ [deno] done"; } \
-                               || { FAILED_STEPS+=("deno · see $deno_log"); STEP_COUNT=$((STEP_COUNT+1)); log "✗ [deno]"; }
+        bg_collect "stdio" || true
 
-        printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
-            "$(elapsed)" "setup" "node · stdio · deno  done" >&2
-    fi
+        # ── PATH for ~/.rote/bin (node installed it) ──────────────────────
+        if [ -d "$HOME/.rote/bin" ]; then
+            case ":$PATH:" in
+                *":$HOME/.rote/bin:"*) ;;
+                *) export PATH="$HOME/.rote/bin:$PATH" ;;
+            esac
 
-    # ── path config (needs node done) ─────────────────────────────────────
-    if [ -d "$HOME/.rote/bin" ]; then
-        case ":$PATH:" in
-            *":$HOME/.rote/bin:"*) ;;
-            *) export PATH="$HOME/.rote/bin:$PATH" ;;
-        esac
-
-        SHELL_CONFIG=$(detect_shell_config)
-        if [ -n "$SHELL_CONFIG" ] && ! grep -qF '/.rote/bin' "$SHELL_CONFIG" 2>/dev/null; then
-            echo "" >> "$SHELL_CONFIG"
-            echo "# rote bundled runtimes (node, npm, npx, deno)" >> "$SHELL_CONFIG"
-            echo 'export PATH="$HOME/.rote/bin:$PATH"' >> "$SHELL_CONFIG"
-        fi
-        progress_ok "path" "~/.rote/bin in PATH"
-    fi
-
-    # ── parallel group B: playwright + sdk ────────────────────────────────
-    # playwright needs npx (from node); sdk needs deno — both now done.
-    if command -v rote >/dev/null 2>&1; then
-        local pw_log="$LOG_DIR/playwright.log"
-        local sdk_log="$LOG_DIR/sdk.log"
-
-        if command -v npx >/dev/null 2>&1; then
-            npx -y @playwright/test install --with-deps chrome > "$pw_log" 2>&1 &
-            local pid_pw=$!
-        fi
-        rote sdk install > "$sdk_log" 2>&1 &
-        local pid_sdk=$!
-
-        local i=0
-        printf "\033[?25l" >&2
-        while { [ -n "${pid_pw:-}" ] && kill -0 "$pid_pw" 2>/dev/null; } || kill -0 "$pid_sdk" 2>/dev/null; do
-            local frame="${spinner_frames[$((i % ${#spinner_frames[@]}))]}"
-            printf "\r  ${CYAN}%s${NC} ${DIM}%s${NC}  %-10s ${DIM}%s${NC}\033[K" \
-                "$frame" "$(elapsed)" "setup" "browser · sdk  (parallel)" >&2
-            sleep 0.08
-            i=$((i + 1))
-        done
-        printf "\033[?25h" >&2
-
-        if [ -n "${pid_pw:-}" ]; then
-            local rc_pw=0; wait "$pid_pw" || rc_pw=$?
-            cat "$pw_log" >> "$LOG_FILE"
-            [ "$rc_pw" = "0" ] && { COMPLETED_STEPS+=("browser"); STEP_COUNT=$((STEP_COUNT+1)); log "✓ [browser] done"; } \
-                                || { FAILED_STEPS+=("browser · see $pw_log"); STEP_COUNT=$((STEP_COUNT+1)); log "✗ [browser]"; }
+            SHELL_CONFIG=$(detect_shell_config)
+            if [ -n "$SHELL_CONFIG" ] && ! grep -qF '/.rote/bin' "$SHELL_CONFIG" 2>/dev/null; then
+                echo "" >> "$SHELL_CONFIG"
+                echo "# rote bundled runtimes (node, npm, npx, deno)" >> "$SHELL_CONFIG"
+                echo 'export PATH="$HOME/.rote/bin:$PATH"' >> "$SHELL_CONFIG"
+            fi
+            progress_ok "path" "~/.rote/bin in PATH"
         fi
 
-        local rc_sdk=0; wait "$pid_sdk" || rc_sdk=$?
-        cat "$sdk_log" >> "$LOG_FILE"
-        [ "$rc_sdk" = "0" ] && { COMPLETED_STEPS+=("sdk"); STEP_COUNT=$((STEP_COUNT+1)); log "✓ [sdk] done"; } \
-                             || { FAILED_STEPS+=("sdk · see $sdk_log"); STEP_COUNT=$((STEP_COUNT+1)); log "✗ [sdk]"; }
+        # ── playwright: depends on node being done ────────────────────────
+        if [ -n "$ROTE_SKIP_BROWSER" ]; then
+            progress_ok "browser" "Skipped (ROTE_SKIP_BROWSER set)"
+        elif [ "$OS" = "linux" ] && [ -z "$ROTE_INSTALL_BROWSER" ]; then
+            progress_ok "browser" "Deferred (run: npx @playwright/test install --with-deps chromium)"
+        elif command -v npx >/dev/null 2>&1; then
+            if [ "$OS" = "linux" ] && [ "$ARCH" = "aarch64" ]; then
+                progress "browser" "Installing Playwright Chromium (arm64)..." \
+                    npx -y @playwright/test install --with-deps chromium || true
+            else
+                PW_BROWSER=$(detect_playwright_browser)
+                if [ "$PW_BROWSER" = "firefox" ]; then
+                    progress "browser" "Installing Playwright Firefox..." \
+                        npx -y @playwright/test install --with-deps firefox || true
+                else
+                    progress "browser" "Installing Playwright Chrome..." \
+                        npx -y @playwright/test install --with-deps chrome || true
+                fi
+            fi
+        fi
 
-        printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
-            "$(elapsed)" "setup" "browser · sdk  done" >&2
-    fi
-
-    # ── shell setup ───────────────────────────────────────────────────────
-    if command -v rote >/dev/null 2>&1; then
-        progress_clear
-
-        if [ -n "$AUTO_YES" ]; then
-            response="Y"
+        # ── deno: collect + sdk (sdk depends on deno being done) ──────────
+        if [ "$WANT_DENO" = "Y" ] || [ "$WANT_DENO" = "y" ]; then
+            if bg_collect "deno"; then
+                progress "sdk" "Installing TypeScript SDK..." \
+                    rote sdk install || true
+            fi
         else
-            printf "\r  ${CYAN}?${NC} ${DIM}%s${NC}  %-10s Set up shell integration? ${DIM}[Y/n]${NC} " \
-                "$(elapsed)" "shell" >&2
-            prompt_user response
-            response=${response:-Y}
-            printf "\r\033[K" >&2
+            STEP_COUNT=$((STEP_COUNT + 1))
+            COMPLETED_STEPS+=("deno")
+            log "· [deno] Skipped by user"
         fi
 
-        if [ "$response" = "Y" ] || [ "$response" = "y" ]; then
+    fi
+
+    # ── shell setup (serial, fast, writes config files) ───────────────────
+    if command -v rote >/dev/null 2>&1; then
+        if [ "$WANT_SHELL" = "Y" ] || [ "$WANT_SHELL" = "y" ]; then
             progress "shell" "Setting up shell integration..." \
                 rote shell-setup || true
 
@@ -385,7 +543,7 @@ install_rote() {
         else
             STEP_COUNT=$((STEP_COUNT + 1))
             COMPLETED_STEPS+=("shell")
-            log "· [shell] Skipped"
+            log "· [shell] Skipped by user"
         fi
     fi
 }
@@ -471,7 +629,12 @@ main() {
 
     log "Version: v$VERSION"
 
-    # Install
+    # Collect user preferences upfront — before any downloads start.
+    # Interactive: asks two Y/n questions then begins parallel phase.
+    # Non-interactive (ROTE_YES=1): skips questions, defaults all to Y.
+    collect_preferences
+
+    # Install binary + run parallel phase
     install_rote
 
     # Finale
