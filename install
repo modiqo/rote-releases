@@ -10,14 +10,44 @@ REPO="modiqo/rote-releases"
 INSTALL_DIR="${ROTE_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${ROTE_VERSION:-latest}"
 AUTO_YES="${ROTE_YES:-}"
+RESET_INSTALL="${ROTE_RESET:-}"
+FULL_INSTALL="${ROTE_FULL:-}"
+
+# Parse --reset / --full flags
+for arg in "$@"; do
+    case "$arg" in
+        --reset) RESET_INSTALL="1" ;;
+        --full)  FULL_INSTALL="1" ;;
+    esac
+done
 
 # ─── Log setup ───────────────────────────────────────────────────────────────
 LOG_DIR="$HOME/.rote/log"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/install.log"
+STATE_FILE="$LOG_DIR/install.state"
+
+# Reset clears the checkpoint ledger so all steps re-run
+if [ -n "$RESET_INSTALL" ]; then
+    rm -f "$STATE_FILE"
+fi
+
 : > "$LOG_FILE"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+
+# ─── Checkpoint ledger ───────────────────────────────────────────────────────
+# Each completed step is recorded as a line "step_name=ok" in STATE_FILE.
+# On re-run, steps that already have a checkpoint are skipped automatically.
+
+step_done() {
+    [ -f "$STATE_FILE" ] && grep -qx "$1=ok" "$STATE_FILE" 2>/dev/null
+}
+
+mark_done() {
+    echo "$1=ok" >> "$STATE_FILE"
+    log "checkpoint: $1=ok"
+}
 
 # Restore cursor on exit
 trap 'printf "\033[?25h" >&2' EXIT
@@ -88,6 +118,7 @@ progress() {
 
     if [ "$rc" = "0" ]; then
         COMPLETED_STEPS+=("$phase")
+        mark_done "$phase"
         log "✓ [$phase] $message"
         # Show brief success — gets overwritten by next step
         printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K" \
@@ -106,6 +137,7 @@ progress() {
 progress_ok() {
     STEP_COUNT=$((STEP_COUNT + 1))
     COMPLETED_STEPS+=("$1")
+    mark_done "$1"
     log "✓ [$1] $2"
     printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K" \
         "$(elapsed)" "$1" "$2" >&2
@@ -162,6 +194,7 @@ bg_collect() {
 
     if [ "$rc" = "0" ]; then
         COMPLETED_STEPS+=("$phase")
+        mark_done "$phase"
         log "✓ [bg:$phase] $message"
         printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K" \
             "$(elapsed)" "$phase" "$message" >&2
@@ -331,47 +364,55 @@ install_rote() {
     log "Download URL: $download_url"
 
     # ── download ──────────────────────────────────────────────────────────
-    if ! progress "download" "Fetching rote v${VERSION}..." \
-        curl -fsSL "$download_url" -o "$archive_file"; then
+    if step_done "install"; then
         progress_clear
-        printf "  ${RED}✗${NC}  download   Download failed — check %s\n" "$LOG_FILE" >&2
-        rm -rf "$tmp_dir"
-        exit 1
-    fi
-
-    # ── extract ───────────────────────────────────────────────────────────
-    case "$ARCHIVE_EXT" in
-        tar.gz) local extract_cmd="tar xzf $archive_file -C $tmp_dir" ;;
-        zip)    local extract_cmd="unzip -q $archive_file -d $tmp_dir" ;;
-    esac
-
-    if ! progress "extract" "Unpacking archive..." \
-        bash -c "$extract_cmd"; then
-        progress_clear
-        printf "  ${RED}✗${NC}  extract    Extraction failed\n" >&2
-        rm -rf "$tmp_dir"
-        exit 1
-    fi
-
-    # ── install binary ────────────────────────────────────────────────────
-    mkdir -p "$INSTALL_DIR"
-
-    if [ "$OS" = "windows" ]; then
-        mv "$tmp_dir/rote.exe" "$INSTALL_DIR/rote.exe"
-        chmod +x "$INSTALL_DIR/rote.exe"
-        BINARY_PATH="$INSTALL_DIR/rote.exe"
+        printf "  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
+            "$(elapsed)" "install" "Already installed — skipping download" >&2
+        COMPLETED_STEPS+=("download" "extract" "install")
+        STEP_COUNT=$((STEP_COUNT + 3))
     else
-        mv "$tmp_dir/rote" "$INSTALL_DIR/rote"
-        chmod +x "$INSTALL_DIR/rote"
-        BINARY_PATH="$INSTALL_DIR/rote"
-        if [ -f "$tmp_dir/rote-stdio-daemon" ]; then
-            mv "$tmp_dir/rote-stdio-daemon" "$INSTALL_DIR/rote-stdio-daemon"
-            chmod +x "$INSTALL_DIR/rote-stdio-daemon"
+        if ! progress "download" "Fetching rote v${VERSION}..." \
+            curl -fsSL "$download_url" -o "$archive_file"; then
+            progress_clear
+            printf "  ${RED}✗${NC}  download   Download failed — check %s\n" "$LOG_FILE" >&2
+            rm -rf "$tmp_dir"
+            exit 1
         fi
-    fi
 
-    rm -rf "$tmp_dir"
-    progress_ok "install" "Installed to $BINARY_PATH"
+        # ── extract ───────────────────────────────────────────────────────────
+        case "$ARCHIVE_EXT" in
+            tar.gz) local extract_cmd="tar xzf $archive_file -C $tmp_dir" ;;
+            zip)    local extract_cmd="unzip -q $archive_file -d $tmp_dir" ;;
+        esac
+
+        if ! progress "extract" "Unpacking archive..." \
+            bash -c "$extract_cmd"; then
+            progress_clear
+            printf "  ${RED}✗${NC}  extract    Extraction failed\n" >&2
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+
+        # ── install binary ────────────────────────────────────────────────────
+        mkdir -p "$INSTALL_DIR"
+
+        if [ "$OS" = "windows" ]; then
+            mv "$tmp_dir/rote.exe" "$INSTALL_DIR/rote.exe"
+            chmod +x "$INSTALL_DIR/rote.exe"
+            BINARY_PATH="$INSTALL_DIR/rote.exe"
+        else
+            mv "$tmp_dir/rote" "$INSTALL_DIR/rote"
+            chmod +x "$INSTALL_DIR/rote"
+            BINARY_PATH="$INSTALL_DIR/rote"
+            if [ -f "$tmp_dir/rote-stdio-daemon" ]; then
+                mv "$tmp_dir/rote-stdio-daemon" "$INSTALL_DIR/rote-stdio-daemon"
+                chmod +x "$INSTALL_DIR/rote-stdio-daemon"
+            fi
+        fi
+
+        rm -rf "$tmp_dir"
+        progress_ok "install" "Installed to $BINARY_PATH"
+    fi
 
     # ── verify + PATH ─────────────────────────────────────────────────────
     if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
@@ -385,7 +426,9 @@ install_rote() {
         progress_ok "path" "$INSTALL_DIR added to PATH (restart shell or: source $SHELL_CONFIG)"
     fi
 
-    if command -v rote >/dev/null 2>&1; then
+    if step_done "verify"; then
+        : # already verified in a prior run — binary is present
+    elif command -v rote >/dev/null 2>&1; then
         local ver_output
         ver_output=$(rote --version 2>/dev/null || echo "unknown")
         progress_ok "verify" "$ver_output"
@@ -415,19 +458,34 @@ install_rote() {
 
         # ── fire background jobs ──────────────────────────────────────────
 
-        # node: always install (playwright depends on it)
-        bg_start "node" "Setting up Node.js runtime..." \
-            rote node install
-
-        # deno: only if user said yes
-        if [ "$WANT_DENO" = "Y" ] || [ "$WANT_DENO" = "y" ]; then
-            bg_start "deno" "Installing Deno runtime..." \
-                rote deno install
+        # node: always install (playwright depends on it) — skip if done
+        if step_done "node"; then
+            COMPLETED_STEPS+=("node"); STEP_COUNT=$((STEP_COUNT + 1))
+            log "· [node] already done, skipping"
+        else
+            bg_start "node" "Setting up Node.js runtime..." \
+                rote node install
         fi
 
-        # stdio: independent, fire immediately
-        bg_start "stdio" "Initializing MCP servers..." \
-            rote stdio init-baseline
+        # deno: only if user said yes — skip if done
+        if [ "$WANT_DENO" = "Y" ] || [ "$WANT_DENO" = "y" ]; then
+            if step_done "deno"; then
+                COMPLETED_STEPS+=("deno"); STEP_COUNT=$((STEP_COUNT + 1))
+                log "· [deno] already done, skipping"
+            else
+                bg_start "deno" "Installing Deno runtime..." \
+                    rote deno install
+            fi
+        fi
+
+        # stdio: independent, fire immediately — skip if done
+        if step_done "stdio"; then
+            COMPLETED_STEPS+=("stdio"); STEP_COUNT=$((STEP_COUNT + 1))
+            log "· [stdio] already done, skipping"
+        else
+            bg_start "stdio" "Initializing MCP servers..." \
+                rote stdio init-baseline
+        fi
 
         # ── spinner covers the parallel phase ─────────────────────────────
         # Show a combined waiting spinner while all background jobs run.
@@ -484,11 +542,24 @@ install_rote() {
             progress_ok "path" "~/.rote/bin in PATH"
         fi
 
-        # ── playwright: depends on node being done ────────────────────────
-        if [ -n "$ROTE_SKIP_BROWSER" ]; then
-            progress_ok "browser" "Skipped (ROTE_SKIP_BROWSER set)"
-        elif [ "$OS" = "linux" ] && [ -z "$ROTE_INSTALL_BROWSER" ]; then
-            progress_ok "browser" "Deferred (run: npx @playwright/test install --with-deps chromium)"
+        # ── playwright: skipped by default; use --full to install ───────────
+        if step_done "browser"; then
+            COMPLETED_STEPS+=("browser"); STEP_COUNT=$((STEP_COUNT + 1))
+            log "· [browser] already done, skipping"
+        elif [ -z "$FULL_INSTALL" ] && [ -z "$ROTE_SKIP_BROWSER" ]; then
+            STEP_COUNT=$((STEP_COUNT + 1))
+            COMPLETED_STEPS+=("browser")
+            mark_done "browser_skipped"
+            log "· [browser] skipped (no --full)"
+            printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
+                "$(elapsed)" "browser" "Skipped (run: rote setup --full to install)" >&2
+        elif [ -n "$ROTE_SKIP_BROWSER" ]; then
+            STEP_COUNT=$((STEP_COUNT + 1))
+            COMPLETED_STEPS+=("browser")
+            mark_done "browser_skipped"
+            log "· [browser] skipped (ROTE_SKIP_BROWSER set)"
+            printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
+                "$(elapsed)" "browser" "Skipped (ROTE_SKIP_BROWSER set)" >&2
         elif command -v npx >/dev/null 2>&1; then
             if [ "$OS" = "linux" ] && [ "$ARCH" = "aarch64" ]; then
                 progress "browser" "Installing Playwright Chromium (arm64)..." \
@@ -507,9 +578,17 @@ install_rote() {
 
         # ── deno: collect + sdk (sdk depends on deno being done) ──────────
         if [ "$WANT_DENO" = "Y" ] || [ "$WANT_DENO" = "y" ]; then
-            if bg_collect "deno"; then
-                progress "sdk" "Installing TypeScript SDK..." \
-                    rote sdk install || true
+            if ! step_done "deno"; then
+                bg_collect "deno" || true
+            fi
+            if step_done "deno"; then
+                if step_done "sdk"; then
+                    COMPLETED_STEPS+=("sdk"); STEP_COUNT=$((STEP_COUNT + 1))
+                    log "· [sdk] already done, skipping"
+                else
+                    progress "sdk" "Installing TypeScript SDK..." \
+                        rote sdk install || true
+                fi
             fi
         else
             STEP_COUNT=$((STEP_COUNT + 1))
@@ -522,22 +601,27 @@ install_rote() {
     # ── shell setup (serial, fast, writes config files) ───────────────────
     if command -v rote >/dev/null 2>&1; then
         if [ "$WANT_SHELL" = "Y" ] || [ "$WANT_SHELL" = "y" ]; then
-            progress "shell" "Setting up shell integration..." \
-                rote shell-setup || true
+            if step_done "shell"; then
+                COMPLETED_STEPS+=("shell"); STEP_COUNT=$((STEP_COUNT + 1))
+                log "· [shell] already done, skipping"
+            else
+                progress "shell" "Setting up shell integration..." \
+                    rote shell-setup || true
 
-            SHELL_CONFIG=$(detect_shell_config)
-            SHELL_NAME=$(detect_shell_name)
+                SHELL_CONFIG=$(detect_shell_config)
+                SHELL_NAME=$(detect_shell_name)
 
-            if [ -n "$SHELL_CONFIG" ]; then
-                if ! grep -qF "rote/shell/init.sh" "$SHELL_CONFIG" 2>/dev/null; then
-                    echo "" >> "$SHELL_CONFIG"
-                    echo "# rote shell integration" >> "$SHELL_CONFIG"
-                    echo '[ -f ~/.rote/shell/init.sh ] && source ~/.rote/shell/init.sh' >> "$SHELL_CONFIG"
-                fi
-                if [ -n "$SHELL_NAME" ] && ! grep -qF "rote completion" "$SHELL_CONFIG" 2>/dev/null; then
-                    echo "" >> "$SHELL_CONFIG"
-                    echo "# rote completion" >> "$SHELL_CONFIG"
-                    echo "eval \"\$(rote completion $SHELL_NAME)\"" >> "$SHELL_CONFIG"
+                if [ -n "$SHELL_CONFIG" ]; then
+                    if ! grep -qF "rote/shell/init.sh" "$SHELL_CONFIG" 2>/dev/null; then
+                        echo "" >> "$SHELL_CONFIG"
+                        echo "# rote shell integration" >> "$SHELL_CONFIG"
+                        echo '[ -f ~/.rote/shell/init.sh ] && source ~/.rote/shell/init.sh' >> "$SHELL_CONFIG"
+                    fi
+                    if [ -n "$SHELL_NAME" ] && ! grep -qF "rote completion" "$SHELL_CONFIG" 2>/dev/null; then
+                        echo "" >> "$SHELL_CONFIG"
+                        echo "# rote completion" >> "$SHELL_CONFIG"
+                        echo "eval \"\$(rote completion $SHELL_NAME)\"" >> "$SHELL_CONFIG"
+                    fi
                 fi
             fi
         else
@@ -599,6 +683,16 @@ main() {
     echo "" >&2
     printf "  ${BOLD}rote installer${NC} ${DIM}· Execution Context Engineering${NC}\n" >&2
     echo "" >&2
+
+    # Show resume notice if a prior run was interrupted
+    if [ -f "$STATE_FILE" ] && [ -z "$RESET_INSTALL" ]; then
+        local done_count
+        done_count=$(grep -c "=ok" "$STATE_FILE" 2>/dev/null || echo 0)
+        printf "  ${CYAN}→${NC} ${DIM}Resuming interrupted install (%s steps already complete)${NC}\n" \
+            "$done_count" >&2
+        printf "  ${DIM}  Run with --reset to start fresh.${NC}\n" >&2
+        echo "" >&2
+    fi
 
     log "=== rote installation started ==="
 
