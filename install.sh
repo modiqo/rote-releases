@@ -11,11 +11,13 @@ INSTALL_DIR="${ROTE_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${ROTE_VERSION:-latest}"
 AUTO_YES="${ROTE_YES:-}"
 RESET_INSTALL="${ROTE_RESET:-}"
+FULL_INSTALL="${ROTE_FULL:-}"
 
-# Parse --reset flag
+# Parse --reset / --full flags
 for arg in "$@"; do
     case "$arg" in
         --reset) RESET_INSTALL="1" ;;
+        --full)  FULL_INSTALL="1" ;;
     esac
 done
 
@@ -39,7 +41,7 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
 # On re-run, steps that already have a checkpoint are skipped automatically.
 
 step_done() {
-    [ -f "$STATE_FILE" ] && grep -qF "$1=ok" "$STATE_FILE" 2>/dev/null
+    [ -f "$STATE_FILE" ] && grep -qx "$1=ok" "$STATE_FILE" 2>/dev/null
 }
 
 mark_done() {
@@ -540,14 +542,24 @@ install_rote() {
             progress_ok "path" "~/.rote/bin in PATH"
         fi
 
-        # ── playwright: depends on node being done ────────────────────────
+        # ── playwright: skipped by default; use --full to install ───────────
         if step_done "browser"; then
             COMPLETED_STEPS+=("browser"); STEP_COUNT=$((STEP_COUNT + 1))
             log "· [browser] already done, skipping"
+        elif [ -z "$FULL_INSTALL" ] && [ -z "$ROTE_SKIP_BROWSER" ]; then
+            STEP_COUNT=$((STEP_COUNT + 1))
+            COMPLETED_STEPS+=("browser")
+            mark_done "browser_skipped"
+            log "· [browser] skipped (no --full)"
+            printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
+                "$(elapsed)" "browser" "Skipped (run: rote setup --full to install)" >&2
         elif [ -n "$ROTE_SKIP_BROWSER" ]; then
-            progress_ok "browser" "Skipped (ROTE_SKIP_BROWSER set)"
-        elif [ "$OS" = "linux" ] && [ -z "$ROTE_INSTALL_BROWSER" ]; then
-            progress_ok "browser" "Deferred (run: npx @playwright/test install --with-deps chromium)"
+            STEP_COUNT=$((STEP_COUNT + 1))
+            COMPLETED_STEPS+=("browser")
+            mark_done "browser_skipped"
+            log "· [browser] skipped (ROTE_SKIP_BROWSER set)"
+            printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
+                "$(elapsed)" "browser" "Skipped (ROTE_SKIP_BROWSER set)" >&2
         elif command -v npx >/dev/null 2>&1; then
             if [ "$OS" = "linux" ] && [ "$ARCH" = "aarch64" ]; then
                 progress "browser" "Installing Playwright Chromium (arm64)..." \
