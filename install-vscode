@@ -40,7 +40,7 @@ fi
 VERSION="${TAG#vscode-v}"
 printf "  ${GREEN}●${NC} Found v${VERSION}\n"
 
-DOWNLOAD_URL="https://releases.getrote.dev/${TAG}/modiqo-${VERSION}.vsix"
+DOWNLOAD_URL="https://releases.getrote.dev/${TAG}/rote-${VERSION}.vsix"
 VSIX_FILE="/tmp/rote-vscode-${VERSION}.vsix"
 
 if ! curl -fsSL "$DOWNLOAD_URL" -o "$VSIX_FILE"; then
