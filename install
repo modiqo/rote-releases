@@ -356,6 +356,40 @@ collect_preferences() {
 # ═══════════════════════════════════════════════════════════════════════════════
 # Install sequence
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# Fetch the published .sha256 file and compare against a local hash of the
+# archive. The checksum file is colocated with the binary on the CDN and has
+# the standard sha256sum format: "<64 hex>  <filename>". We compare only the
+# hash (not "sha256sum -c") because the local archive is renamed to rote.<ext>
+# while the checksum file names the upstream artifact.
+verify_sha256() {
+    local archive="$1"
+    local checksum_url="$2"
+    local expected actual
+
+    local hasher
+    if command -v sha256sum >/dev/null 2>&1; then
+        hasher="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+        hasher="shasum -a 256"
+    else
+        echo "no sha256 tool available (need sha256sum or shasum)" >&2
+        return 1
+    fi
+
+    expected=$(curl -fsSL "$checksum_url" | awk '{print $1}')
+    if [ "${#expected}" -ne 64 ]; then
+        echo "invalid or missing checksum at $checksum_url" >&2
+        return 1
+    fi
+
+    actual=$($hasher "$archive" | awk '{print $1}')
+    if [ "$expected" != "$actual" ]; then
+        echo "checksum mismatch at $checksum_url: expected $expected, got $actual" >&2
+        return 1
+    fi
+}
+
 install_rote() {
     local download_url="https://releases.getrote.dev/v${VERSION}/${ARTIFACT}.${ARCHIVE_EXT}"
     local tmp_dir=$(mktemp -d)
@@ -375,6 +409,15 @@ install_rote() {
             curl -fsSL "$download_url" -o "$archive_file"; then
             progress_clear
             printf "  ${RED}✗${NC}  download   Download failed — check %s\n" "$LOG_FILE" >&2
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+
+        # ── verify checksum ───────────────────────────────────────────────────
+        if ! progress "checksum" "Verifying sha256..." \
+            verify_sha256 "$archive_file" "${download_url}.sha256"; then
+            progress_clear
+            printf "  ${RED}✗${NC}  checksum   Checksum verification failed — check %s\n" "$LOG_FILE" >&2
             rm -rf "$tmp_dir"
             exit 1
         fi
