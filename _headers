@@ -9,3 +9,6 @@
 /install.sh
   Content-Type: text/plain; charset=utf-8
   Cache-Control: no-cache
+
+/min-cli-version.json
+  Cache-Control: public, max-age=3600
