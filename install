@@ -380,6 +380,40 @@ collect_preferences() {
 # ═══════════════════════════════════════════════════════════════════════════════
 # Install sequence
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# Verify the downloaded archive against its colocated .sha256. Guards against a
+# corrupted/truncated download, not a tampered CDN — the checksum is served from
+# the same origin as the binary, so it carries no separate trust. Compare the
+# hash only (not "sha256sum -c"): the local archive is renamed to rote.<ext>
+# while the checksum file names the upstream artifact.
+verify_sha256() {
+    local archive="$1"
+    local checksum_url="$2"
+    local expected actual
+
+    local hasher
+    if command -v sha256sum >/dev/null 2>&1; then
+        hasher="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+        hasher="shasum -a 256"
+    else
+        echo "no sha256 tool available (need sha256sum or shasum)" >&2
+        return 1
+    fi
+
+    expected=$(curl -fsSL "$checksum_url" | awk '{print $1}')
+    if [ "${#expected}" -ne 64 ]; then
+        echo "invalid or missing checksum at $checksum_url" >&2
+        return 1
+    fi
+
+    actual=$($hasher "$archive" | awk '{print $1}')
+    if [ "$expected" != "$actual" ]; then
+        echo "checksum mismatch at $checksum_url: expected $expected, got $actual" >&2
+        return 1
+    fi
+}
+
 install_rote() {
     local download_url="https://releases.getrote.dev/v${VERSION}/${ARTIFACT}.${ARCHIVE_EXT}"
     local tmp_dir=$(mktemp -d)
@@ -392,8 +426,13 @@ install_rote() {
         progress_clear
         printf "  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
             "$(elapsed)" "install" "Already installed — skipping download" >&2
-        COMPLETED_STEPS+=("download" "extract" "install")
-        STEP_COUNT=$((STEP_COUNT + 3))
+        if [ "$OS" = "windows" ]; then
+            COMPLETED_STEPS+=("download" "extract" "install")
+            STEP_COUNT=$((STEP_COUNT + 3))
+        else
+            COMPLETED_STEPS+=("download" "checksum" "extract" "install")
+            STEP_COUNT=$((STEP_COUNT + 4))
+        fi
     else
         if ! progress "download" "Fetching rote v${VERSION}..." \
             curl -fsSL "$download_url" -o "$archive_file"; then
@@ -401,6 +440,18 @@ install_rote() {
             printf "  ${RED}✗${NC}  download   Download failed — check %s\n" "$LOG_FILE" >&2
             rm -rf "$tmp_dir"
             exit 1
+        fi
+
+        # ── verify checksum ───────────────────────────────────────────────────
+        # Windows .zip artifacts ship without a colocated .sha256.
+        if [ "$OS" != "windows" ]; then
+            if ! progress "checksum" "Verifying sha256..." \
+                verify_sha256 "$archive_file" "${download_url}.sha256"; then
+                progress_clear
+                printf "  ${RED}✗${NC}  checksum   Checksum verification failed — check %s\n" "$LOG_FILE" >&2
+                rm -rf "$tmp_dir"
+                exit 1
+            fi
         fi
 
         # ── extract ───────────────────────────────────────────────────────────
