@@ -235,7 +235,7 @@ rote browse click <ref>                    # Interact using discovered refs
 
 Pattern: navigate → snapshot → understand → interact. 95–99% token savings vs raw page text.
 
-### SDKs — flows in TypeScript or Python
+### SDK — flows in TypeScript
 
 ```typescript
 import { Rote, FlowOutput, runPreflight } from "rote-sdk";
@@ -244,14 +244,7 @@ const out = new FlowOutput();
 await runPreflight(rote, { adapters: ["github"] });
 ```
 
-```python
-from rote_sdk import Rote, FlowOutput, run_preflight
-rote = Rote()
-out = FlowOutput()
-await run_preflight(rote, adapters=["github"])
-```
-
-Both SDKs ship with rote, run via the embedded Deno / Python runtime, and support `--output=human|summary|json` for human, AI, and pipeline consumers respectively.
+The SDK ships with rote, runs via the embedded Deno runtime, and supports `--output=human|summary|json` for human, AI, and pipeline consumers respectively.
 
 </details>
 
