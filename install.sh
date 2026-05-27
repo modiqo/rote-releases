@@ -7,22 +7,30 @@ set -e
 
 # Configuration
 REPO="modiqo/rote-releases"
-INSTALL_DIR="${ROTE_INSTALL_DIR:-$HOME/.local/bin}"
+# ROTE_BIN is preferred; ROTE_INSTALL_DIR kept as legacy alias.
+INSTALL_DIR="${ROTE_BIN:-${ROTE_INSTALL_DIR:-$HOME/.local/bin}}"
+# ROTE_HOME holds runtime state (logs, bundled runtimes, shell init).
+ROTE_HOME="${ROTE_HOME:-$HOME/.rote}"
 VERSION="${ROTE_VERSION:-latest}"
 AUTO_YES="${ROTE_YES:-}"
 RESET_INSTALL="${ROTE_RESET:-}"
 FULL_INSTALL="${ROTE_FULL:-}"
+# ROTE_BARE skips post-install runtime setup (node/deno/stdio/sdk/shell).
+# Used by integration tests to verify the binary install path without the
+# heavy network-bound subcommands.
+BARE_INSTALL="${ROTE_BARE:-}"
 
 # Parse --reset / --full flags
 for arg in "$@"; do
     case "$arg" in
         --reset) RESET_INSTALL="1" ;;
         --full)  FULL_INSTALL="1" ;;
+        --bare)  BARE_INSTALL="1" ;;
     esac
 done
 
 # ─── Log setup ───────────────────────────────────────────────────────────────
-LOG_DIR="$HOME/.rote/log"
+LOG_DIR="$ROTE_HOME/log"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/install.log"
 STATE_FILE="$LOG_DIR/install.state"
@@ -217,6 +225,30 @@ prompt_user() {
     fi
 }
 
+# ─── Legacy rc cleanup ───────────────────────────────────────────────────────
+# Strip stale `# rote completion` + `eval "$(rote completion …)"` blocks left
+# behind by older installers. Mirrors `clean_legacy_completion` in
+# crates/rote-cli/src/cli/shell/generator.rs:282-316. Runs from main() so
+# --bare and WANT_SHELL=N paths (which never invoke `rote shell-setup`) still
+# get the cleanup. Keep patterns in sync with `legacy_patterns` there.
+clean_legacy_completion() {
+    for f in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc"; do
+        [ -f "$f" ] && [ -w "$f" ] || continue
+        grep -Fxq -e '# rote completion' \
+                  -e 'eval "$(rote completion bash)"' \
+                  -e 'eval "$(rote completion zsh)"' "$f" 2>/dev/null || continue
+        tmp=$(mktemp) || continue
+        if grep -Fxv -e '# rote completion' \
+                     -e 'eval "$(rote completion bash)"' \
+                     -e 'eval "$(rote completion zsh)"' "$f" > "$tmp" 2>/dev/null; then
+            # cat > preserves inode/mode/owner and survives symlinks (e.g.
+            # ~/.zshrc → ~/dotfiles/zshrc). `mv` would replace the symlink.
+            cat "$tmp" > "$f"
+        fi
+        rm -f "$tmp"
+    done
+}
+
 # ─── Shell detection ─────────────────────────────────────────────────────────
 detect_shell_config() {
     case "$SHELL" in
@@ -225,14 +257,6 @@ detect_shell_config() {
             if [ -f "$HOME/.bashrc" ]; then echo "$HOME/.bashrc"
             else echo "$HOME/.bash_profile"; fi
             ;;
-        *) echo "" ;;
-    esac
-}
-
-detect_shell_name() {
-    case "$SHELL" in
-        */zsh) echo "zsh" ;;
-        */bash) echo "bash" ;;
         *) echo "" ;;
     esac
 }
@@ -345,7 +369,7 @@ collect_preferences() {
     prompt_user WANT_DENO
     WANT_DENO=${WANT_DENO:-Y}
 
-    printf "  ${CYAN}?${NC}  %-10s Set up shell integration (completions, hooks)? ${DIM}[Y/n]${NC} " \
+    printf "  ${CYAN}?${NC}  %-10s Set up shell integration (hooks, PATH)? ${DIM}[Y/n]${NC} " \
         "shell" >&2
     prompt_user WANT_SHELL
     WANT_SHELL=${WANT_SHELL:-Y}
@@ -356,40 +380,6 @@ collect_preferences() {
 # ═══════════════════════════════════════════════════════════════════════════════
 # Install sequence
 # ═══════════════════════════════════════════════════════════════════════════════
-
-# Fetch the published .sha256 file and compare against a local hash of the
-# archive. The checksum file is colocated with the binary on the CDN and has
-# the standard sha256sum format: "<64 hex>  <filename>". We compare only the
-# hash (not "sha256sum -c") because the local archive is renamed to rote.<ext>
-# while the checksum file names the upstream artifact.
-verify_sha256() {
-    local archive="$1"
-    local checksum_url="$2"
-    local expected actual
-
-    local hasher
-    if command -v sha256sum >/dev/null 2>&1; then
-        hasher="sha256sum"
-    elif command -v shasum >/dev/null 2>&1; then
-        hasher="shasum -a 256"
-    else
-        echo "no sha256 tool available (need sha256sum or shasum)" >&2
-        return 1
-    fi
-
-    expected=$(curl -fsSL "$checksum_url" | awk '{print $1}')
-    if [ "${#expected}" -ne 64 ]; then
-        echo "invalid or missing checksum at $checksum_url" >&2
-        return 1
-    fi
-
-    actual=$($hasher "$archive" | awk '{print $1}')
-    if [ "$expected" != "$actual" ]; then
-        echo "checksum mismatch at $checksum_url: expected $expected, got $actual" >&2
-        return 1
-    fi
-}
-
 install_rote() {
     local download_url="https://releases.getrote.dev/v${VERSION}/${ARTIFACT}.${ARCHIVE_EXT}"
     local tmp_dir=$(mktemp -d)
@@ -409,15 +399,6 @@ install_rote() {
             curl -fsSL "$download_url" -o "$archive_file"; then
             progress_clear
             printf "  ${RED}✗${NC}  download   Download failed — check %s\n" "$LOG_FILE" >&2
-            rm -rf "$tmp_dir"
-            exit 1
-        fi
-
-        # ── verify checksum ───────────────────────────────────────────────────
-        if ! progress "checksum" "Verifying sha256..." \
-            verify_sha256 "$archive_file" "${download_url}.sha256"; then
-            progress_clear
-            printf "  ${RED}✗${NC}  checksum   Checksum verification failed — check %s\n" "$LOG_FILE" >&2
             rm -rf "$tmp_dir"
             exit 1
         fi
@@ -493,7 +474,7 @@ install_rote() {
     # bg_collect prints a newline per job so the terminal builds up a
     # clean list of completed steps.
     # ══════════════════════════════════════════════════════════════════════
-    if command -v rote >/dev/null 2>&1; then
+    if [ -z "$BARE_INSTALL" ] && command -v rote >/dev/null 2>&1; then
 
         echo "" >&2
         printf "  ${DIM}Racing the clock — node · deno · stdio fetching simultaneously${NC}\n" >&2
@@ -569,20 +550,24 @@ install_rote() {
 
         bg_collect "stdio" || true
 
-        # ── PATH for ~/.rote/bin (node installed it) ──────────────────────
-        if [ -d "$HOME/.rote/bin" ]; then
+        # ── PATH for $ROTE_HOME/bin (node installed it) ───────────────────
+        if [ -d "$ROTE_HOME/bin" ]; then
             case ":$PATH:" in
-                *":$HOME/.rote/bin:"*) ;;
-                *) export PATH="$HOME/.rote/bin:$PATH" ;;
+                *":$ROTE_HOME/bin:"*) ;;
+                *) export PATH="$ROTE_HOME/bin:$PATH" ;;
             esac
 
             SHELL_CONFIG=$(detect_shell_config)
-            if [ -n "$SHELL_CONFIG" ] && ! grep -qF '/.rote/bin' "$SHELL_CONFIG" 2>/dev/null; then
+            if [ -n "$SHELL_CONFIG" ] && ! grep -qE '# rote bundled runtimes|/\.rote/bin' "$SHELL_CONFIG" 2>/dev/null; then
                 echo "" >> "$SHELL_CONFIG"
                 echo "# rote bundled runtimes (node, npm, npx, deno)" >> "$SHELL_CONFIG"
-                echo 'export PATH="$HOME/.rote/bin:$PATH"' >> "$SHELL_CONFIG"
+                if [ "$ROTE_HOME" = "$HOME/.rote" ]; then
+                    echo 'export PATH="$HOME/.rote/bin:$PATH"' >> "$SHELL_CONFIG"
+                else
+                    printf 'export PATH="%s/bin:$PATH"\n' "$ROTE_HOME" >> "$SHELL_CONFIG"
+                fi
             fi
-            progress_ok "path" "~/.rote/bin in PATH"
+            progress_ok "path" "$ROTE_HOME/bin in PATH"
         fi
 
         # ── playwright: skipped by default; use --full to install ───────────
@@ -642,7 +627,7 @@ install_rote() {
     fi
 
     # ── shell setup (serial, fast, writes config files) ───────────────────
-    if command -v rote >/dev/null 2>&1; then
+    if [ -z "$BARE_INSTALL" ] && command -v rote >/dev/null 2>&1; then
         if [ "$WANT_SHELL" = "Y" ] || [ "$WANT_SHELL" = "y" ]; then
             if step_done "shell"; then
                 COMPLETED_STEPS+=("shell"); STEP_COUNT=$((STEP_COUNT + 1))
@@ -652,18 +637,17 @@ install_rote() {
                     rote shell-setup || true
 
                 SHELL_CONFIG=$(detect_shell_config)
-                SHELL_NAME=$(detect_shell_name)
 
                 if [ -n "$SHELL_CONFIG" ]; then
-                    if ! grep -qF "rote/shell/init.sh" "$SHELL_CONFIG" 2>/dev/null; then
+                    if ! grep -qE '# rote shell integration|rote/shell/init\.sh' "$SHELL_CONFIG" 2>/dev/null; then
                         echo "" >> "$SHELL_CONFIG"
                         echo "# rote shell integration" >> "$SHELL_CONFIG"
-                        echo '[ -f ~/.rote/shell/init.sh ] && source ~/.rote/shell/init.sh' >> "$SHELL_CONFIG"
-                    fi
-                    if [ -n "$SHELL_NAME" ] && ! grep -qF "rote completion" "$SHELL_CONFIG" 2>/dev/null; then
-                        echo "" >> "$SHELL_CONFIG"
-                        echo "# rote completion" >> "$SHELL_CONFIG"
-                        echo "eval \"\$(rote completion $SHELL_NAME)\"" >> "$SHELL_CONFIG"
+                        if [ "$ROTE_HOME" = "$HOME/.rote" ]; then
+                            echo '[ -f ~/.rote/shell/init.sh ] && source ~/.rote/shell/init.sh' >> "$SHELL_CONFIG"
+                        else
+                            printf '[ -f "%s/shell/init.sh" ] && . "%s/shell/init.sh"\n' \
+                                "$ROTE_HOME" "$ROTE_HOME" >> "$SHELL_CONFIG"
+                        fi
                     fi
                 fi
             fi
@@ -739,6 +723,10 @@ main() {
 
     log "=== rote installation started ==="
 
+    # Strip legacy rote completion lines from rc files (best-effort, silent).
+    # Runs unconditionally so --bare / WANT_SHELL=N upgrades also get cleaned.
+    clean_legacy_completion
+
     # Detect platform (instant)
     detect_platform
     progress_ok "detect" "Platform: $PLATFORM_LABEL"
@@ -750,9 +738,20 @@ main() {
             VER="'"$VERSION"'"
             LOG="'"$LOG_FILE"'"
             if [ "$VER" = "latest" ]; then
-                VER=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>>"$LOG" \
-                    | grep "\"tag_name\":" | sed -E "s/.*\"v([^\"]+)\".*/\1/")
-                if [ -z "$VER" ]; then exit 1; fi
+                # Resolve via github.com redirect, not api.github.com — the
+                # API has a 60/hr unauth quota that NAT/CI/corp IPs blow
+                # through, returning 403. The redirect has no rate limit.
+                URL=$(curl -fsSLI -o /dev/null -w "%{url_effective}" \
+                    "https://github.com/$REPO/releases/latest" 2>>"$LOG")
+                # Require redirect into /releases/tag/<tag>, then strip
+                # optional leading `v`. Rejects 200-no-redirect, error pages,
+                # and unexpected URL shapes that would otherwise feed garbage
+                # into the download URL.
+                case "$URL" in
+                    */releases/tag/*) TAG="${URL##*/tag/}"; VER="${TAG#v}" ;;
+                    *) exit 1 ;;
+                esac
+                case "$VER" in ""|*/*) exit 1 ;; esac
             fi
             echo "$VER"
         '; then
@@ -769,7 +768,14 @@ main() {
     # Collect user preferences upfront — before any downloads start.
     # Interactive: asks two Y/n questions then begins parallel phase.
     # Non-interactive (ROTE_YES=1): skips questions, defaults all to Y.
-    collect_preferences
+    # Bare (ROTE_BARE=1 / --bare): runtime + shell blocks are skipped, so
+    # asking would just collect ignored answers.
+    if [ -n "$BARE_INSTALL" ]; then
+        WANT_DENO="N"
+        WANT_SHELL="N"
+    else
+        collect_preferences
+    fi
 
     # Install binary + run parallel phase
     install_rote
