@@ -12,6 +12,9 @@ INSTALL_DIR="${ROTE_BIN:-${ROTE_INSTALL_DIR:-$HOME/.local/bin}}"
 # ROTE_HOME holds runtime state (logs, bundled runtimes, shell init).
 ROTE_HOME="${ROTE_HOME:-$HOME/.rote}"
 VERSION="${ROTE_VERSION:-latest}"
+# ROTE_RELEASES_BASE_URL overrides the release artifact host (mirror/staging/tests).
+RELEASES_BASE_URL="${ROTE_RELEASES_BASE_URL:-https://releases.getrote.dev}"
+RELEASES_BASE_URL="${RELEASES_BASE_URL%/}"
 AUTO_YES="${ROTE_YES:-}"
 RESET_INSTALL="${ROTE_RESET:-}"
 FULL_INSTALL="${ROTE_FULL:-}"
@@ -415,7 +418,7 @@ verify_sha256() {
 }
 
 install_rote() {
-    local download_url="https://releases.getrote.dev/v${VERSION}/${ARTIFACT}.${ARCHIVE_EXT}"
+    local download_url="${RELEASES_BASE_URL}/v${VERSION}/${ARTIFACT}.${ARCHIVE_EXT}"
     local tmp_dir=$(mktemp -d)
     local archive_file="$tmp_dir/rote.${ARCHIVE_EXT}"
 
