@@ -154,6 +154,25 @@ progress_ok() {
         "$(elapsed)" "$1" "$2" >&2
 }
 
+forget_last_failed_step() {
+    local last=$((${#FAILED_STEPS[@]} - 1))
+    if [ "$last" -ge 0 ]; then
+        unset 'FAILED_STEPS[$last]'
+        FAILED_STEPS=("${FAILED_STEPS[@]}")
+        STEP_COUNT=$((STEP_COUNT - 1))
+    fi
+}
+
+forget_last_completed_step() {
+    local phase="$1"
+    local last=$((${#COMPLETED_STEPS[@]} - 1))
+    if [ "$last" -ge 0 ] && [ "${COMPLETED_STEPS[$last]}" = "$phase" ]; then
+        unset 'COMPLETED_STEPS[$last]'
+        COMPLETED_STEPS=("${COMPLETED_STEPS[@]}")
+        STEP_COUNT=$((STEP_COUNT - 1))
+    fi
+}
+
 # Clear the progress line before interactive prompts
 progress_clear() {
     printf "\r\033[K" >&2
@@ -437,25 +456,54 @@ install_rote() {
             STEP_COUNT=$((STEP_COUNT + 4))
         fi
     else
-        if ! progress "download" "Fetching rote v${VERSION}..." \
-            curl -fsSL "$download_url" -o "$archive_file"; then
-            progress_clear
-            printf "  ${RED}✗${NC}  download   Download failed — check %s\n" "$LOG_FILE" >&2
-            rm -rf "$tmp_dir"
-            exit 1
-        fi
+        local max_attempts=5
+        local attempt=1
+        while true; do
+            rm -f "$archive_file"
+            if progress "download" "Fetching rote v${VERSION}..." \
+                curl -fsSL "$download_url" -o "$archive_file"; then
+                if [ "$OS" = "windows" ]; then
+                    break
+                fi
 
-        # ── verify checksum ───────────────────────────────────────────────────
-        # Windows .zip artifacts ship without a colocated .sha256.
-        if [ "$OS" != "windows" ]; then
-            if ! progress "checksum" "Verifying sha256..." \
-                verify_sha256 "$archive_file" "${download_url}.sha256"; then
-                progress_clear
-                printf "  ${RED}✗${NC}  checksum   Checksum verification failed — check %s\n" "$LOG_FILE" >&2
-                rm -rf "$tmp_dir"
-                exit 1
+                # ── verify checksum ───────────────────────────────────────────
+                # Windows .zip artifacts ship without a colocated .sha256.
+                if progress "checksum" "Verifying sha256..." \
+                    verify_sha256 "$archive_file" "${download_url}.sha256"; then
+                    break
+                fi
+
+                if [ "$attempt" -ge "$max_attempts" ]; then
+                    progress_clear
+                    printf "  ${RED}✗${NC}  checksum   Checksum verification failed after %s attempts — check %s\n" \
+                        "$max_attempts" "$LOG_FILE" >&2
+                    rm -rf "$tmp_dir"
+                    exit 1
+                fi
+
+                forget_last_failed_step
+                forget_last_completed_step "download"
+                log "Retrying download after checksum mismatch (attempt $attempt/$max_attempts)"
+            else
+                if [ "$attempt" -ge "$max_attempts" ]; then
+                    progress_clear
+                    printf "  ${RED}✗${NC}  download   Download failed after %s attempts — check %s\n" \
+                        "$max_attempts" "$LOG_FILE" >&2
+                    rm -rf "$tmp_dir"
+                    exit 1
+                fi
+
+                forget_last_failed_step
+                log "Retrying download after fetch failure (attempt $attempt/$max_attempts)"
             fi
-        fi
+
+            local delay=$((attempt * 2))
+            progress_clear
+            printf "  ${YELLOW}↻${NC} ${DIM}%s${NC}  retry     Waiting %ss before retry %s/%s\033[K\n" \
+                "$(elapsed)" "$delay" "$((attempt + 1))" "$max_attempts" >&2
+            sleep "$delay"
+            attempt=$((attempt + 1))
+        done
 
         # ── extract ───────────────────────────────────────────────────────────
         case "$ARCHIVE_EXT" in
