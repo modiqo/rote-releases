@@ -436,15 +436,69 @@ verify_sha256() {
     fi
 }
 
+json_escape() {
+    local input="$1"
+    local output=""
+    local char
+    local i
+
+    for ((i = 0; i < ${#input}; i++)); do
+        char="${input:i:1}"
+        case "$char" in
+            '"') output="${output}\\\"" ;;
+            \\) output="${output}\\\\" ;;
+            $'\b') output="${output}\\b" ;;
+            $'\f') output="${output}\\f" ;;
+            $'\n') output="${output}\\n" ;;
+            $'\r') output="${output}\\r" ;;
+            $'\t') output="${output}\\t" ;;
+            *) output="${output}${char}" ;;
+        esac
+    done
+
+    printf '%s' "$output"
+}
+
+record_install_marker() {
+    local binary_path="$1"
+    local state_dir="$ROTE_HOME/state"
+    local canonical_binary_path
+    local marker_tmp
+
+    [ -n "$binary_path" ] || return 0
+    [ -e "$binary_path" ] || return 1
+    canonical_binary_path=$(
+        cd "$(dirname "$binary_path")" 2>/dev/null && \
+        printf '%s/%s' "$(pwd -P)" "$(basename "$binary_path")"
+    ) || return 1
+    mkdir -p "$state_dir" || return 1
+    marker_tmp=$(mktemp "$state_dir/install.json.XXXXXX") || return 1
+
+    if printf '{ "method": "script", "bin": "%s" }\n' "$(json_escape "$canonical_binary_path")" \
+        > "$marker_tmp" && mv "$marker_tmp" "$state_dir/install.json"; then
+        return 0
+    fi
+
+    rm -f "$marker_tmp"
+    return 1
+}
+
 install_rote() {
     local download_url="${RELEASES_BASE_URL}/v${VERSION}/${ARTIFACT}.${ARCHIVE_EXT}"
     local tmp_dir=$(mktemp -d)
     local archive_file="$tmp_dir/rote.${ARCHIVE_EXT}"
+    local binary_path="$INSTALL_DIR/rote"
 
     log "Download URL: $download_url"
 
     # ── download ──────────────────────────────────────────────────────────
     if step_done "install"; then
+        if [ "$OS" = "windows" ]; then
+            binary_path="$INSTALL_DIR/rote.exe"
+        fi
+        if ! record_install_marker "$binary_path"; then
+            log "failed to record install marker for $binary_path"
+        fi
         progress_clear
         printf "  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
             "$(elapsed)" "install" "Already installed — skipping download" >&2
@@ -525,11 +579,11 @@ install_rote() {
         if [ "$OS" = "windows" ]; then
             mv "$tmp_dir/rote.exe" "$INSTALL_DIR/rote.exe"
             chmod +x "$INSTALL_DIR/rote.exe"
-            BINARY_PATH="$INSTALL_DIR/rote.exe"
+            binary_path="$INSTALL_DIR/rote.exe"
         else
             mv "$tmp_dir/rote" "$INSTALL_DIR/rote"
             chmod +x "$INSTALL_DIR/rote"
-            BINARY_PATH="$INSTALL_DIR/rote"
+            binary_path="$INSTALL_DIR/rote"
             if [ -f "$tmp_dir/rote-stdio-daemon" ]; then
                 mv "$tmp_dir/rote-stdio-daemon" "$INSTALL_DIR/rote-stdio-daemon"
                 chmod +x "$INSTALL_DIR/rote-stdio-daemon"
@@ -537,7 +591,10 @@ install_rote() {
         fi
 
         rm -rf "$tmp_dir"
-        progress_ok "install" "Installed to $BINARY_PATH"
+        if ! record_install_marker "$binary_path"; then
+            log "failed to record install marker for $binary_path"
+        fi
+        progress_ok "install" "Installed to $binary_path"
     fi
 
     # ── verify + PATH ─────────────────────────────────────────────────────
