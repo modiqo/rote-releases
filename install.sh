@@ -293,7 +293,6 @@ detect_platform() {
     case "$os" in
         linux)   OS="linux" ;;
         darwin)  OS="macos" ;;
-        mingw* | msys* | cygwin*) OS="windows" ;;
         *)
             printf "\r  ${RED}✗${NC}  detect     Unsupported OS: %s\n" "$os" >&2
             exit 1 ;;
@@ -312,7 +311,6 @@ detect_platform() {
         linux-aarch64)  ARTIFACT="rote-linux-aarch64-musl";  ARCHIVE_EXT="tar.gz" ;;
         macos-x86_64)   ARTIFACT="rote-macos-x86_64";       ARCHIVE_EXT="tar.gz" ;;
         macos-aarch64)  ARTIFACT="rote-macos-aarch64";       ARCHIVE_EXT="tar.gz" ;;
-        windows-x86_64) ARTIFACT="rote-windows-x86_64";     ARCHIVE_EXT="zip" ;;
         *)
             printf "\r  ${RED}✗${NC}  detect     No binary for %s\n" "$OS-$ARCH" >&2
             exit 1 ;;
@@ -492,23 +490,34 @@ install_rote() {
     log "Download URL: $download_url"
 
     # ── download ──────────────────────────────────────────────────────────
+    # A stale ledger (binary deleted/outdated) must re-download, not no-op.
+    local install_checkpoint_valid=""
     if step_done "install"; then
-        if [ "$OS" = "windows" ]; then
-            binary_path="$INSTALL_DIR/rote.exe"
+        local installed_version
+        installed_version=$("$binary_path" --version 2>/dev/null) || installed_version=""
+        if [ "${installed_version#rote }" = "$VERSION" ]; then
+            install_checkpoint_valid="1"
+        else
+            log "install checkpoint stale (have: ${installed_version:-no working binary}, want: rote $VERSION) — re-downloading"
+            # sdk/stdio artifacts are written from the binary, so a new binary
+            # must re-run them; node/deno/shell are not binary-coupled.
+            if grep -v -e '^sdk=ok$' -e '^stdio=ok$' "$STATE_FILE" > "$STATE_FILE.tmp" 2>/dev/null; then
+                mv "$STATE_FILE.tmp" "$STATE_FILE"
+            else
+                rm -f "$STATE_FILE.tmp"
+            fi
         fi
+    fi
+
+    if [ -n "$install_checkpoint_valid" ]; then
         if ! record_install_marker "$binary_path"; then
             log "failed to record install marker for $binary_path"
         fi
         progress_clear
         printf "  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
             "$(elapsed)" "install" "Already installed — skipping download" >&2
-        if [ "$OS" = "windows" ]; then
-            COMPLETED_STEPS+=("download" "extract" "install")
-            STEP_COUNT=$((STEP_COUNT + 3))
-        else
-            COMPLETED_STEPS+=("download" "checksum" "extract" "install")
-            STEP_COUNT=$((STEP_COUNT + 4))
-        fi
+        COMPLETED_STEPS+=("download" "checksum" "extract" "install")
+        STEP_COUNT=$((STEP_COUNT + 4))
     else
         local max_attempts=5
         local attempt=1
@@ -516,12 +525,7 @@ install_rote() {
             rm -f "$archive_file"
             if progress "download" "Fetching rote v${VERSION}..." \
                 curl -fsSL "$download_url" -o "$archive_file"; then
-                if [ "$OS" = "windows" ]; then
-                    break
-                fi
-
                 # ── verify checksum ───────────────────────────────────────────
-                # Windows .zip artifacts ship without a colocated .sha256.
                 if progress "checksum" "Verifying sha256..." \
                     verify_sha256 "$archive_file" "${download_url}.sha256"; then
                     break
@@ -560,10 +564,7 @@ install_rote() {
         done
 
         # ── extract ───────────────────────────────────────────────────────────
-        case "$ARCHIVE_EXT" in
-            tar.gz) local extract_cmd="tar xzf $archive_file -C $tmp_dir" ;;
-            zip)    local extract_cmd="unzip -q $archive_file -d $tmp_dir" ;;
-        esac
+        local extract_cmd="tar xzf $archive_file -C $tmp_dir"
 
         if ! progress "extract" "Unpacking archive..." \
             bash -c "$extract_cmd"; then
@@ -576,18 +577,11 @@ install_rote() {
         # ── install binary ────────────────────────────────────────────────────
         mkdir -p "$INSTALL_DIR"
 
-        if [ "$OS" = "windows" ]; then
-            mv "$tmp_dir/rote.exe" "$INSTALL_DIR/rote.exe"
-            chmod +x "$INSTALL_DIR/rote.exe"
-            binary_path="$INSTALL_DIR/rote.exe"
-        else
-            mv "$tmp_dir/rote" "$INSTALL_DIR/rote"
-            chmod +x "$INSTALL_DIR/rote"
-            binary_path="$INSTALL_DIR/rote"
-            if [ -f "$tmp_dir/rote-stdio-daemon" ]; then
-                mv "$tmp_dir/rote-stdio-daemon" "$INSTALL_DIR/rote-stdio-daemon"
-                chmod +x "$INSTALL_DIR/rote-stdio-daemon"
-            fi
+        mv "$tmp_dir/rote" "$INSTALL_DIR/rote"
+        chmod +x "$INSTALL_DIR/rote"
+        if [ -f "$tmp_dir/rote-stdio-daemon" ]; then
+            mv "$tmp_dir/rote-stdio-daemon" "$INSTALL_DIR/rote-stdio-daemon"
+            chmod +x "$INSTALL_DIR/rote-stdio-daemon"
         fi
 
         rm -rf "$tmp_dir"
@@ -598,19 +592,22 @@ install_rote() {
     fi
 
     # ── verify + PATH ─────────────────────────────────────────────────────
-    if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
-        SHELL_CONFIG=$(detect_shell_config)
-        if [ -n "$SHELL_CONFIG" ] && ! grep -qF "$INSTALL_DIR" "$SHELL_CONFIG" 2>/dev/null; then
-            echo "" >> "$SHELL_CONFIG"
-            echo "# rote CLI" >> "$SHELL_CONFIG"
-            echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_CONFIG"
-        fi
-        export PATH="$INSTALL_DIR:$PATH"
-        progress_ok "path" "$INSTALL_DIR added to PATH (restart shell or: source $SHELL_CONFIG)"
-    fi
+    case ":$PATH:" in
+        *":$INSTALL_DIR:"*) ;;
+        *)
+            SHELL_CONFIG=$(detect_shell_config)
+            if [ -n "$SHELL_CONFIG" ] && ! grep -qF "$INSTALL_DIR" "$SHELL_CONFIG" 2>/dev/null; then
+                echo "" >> "$SHELL_CONFIG"
+                echo "# rote CLI" >> "$SHELL_CONFIG"
+                echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_CONFIG"
+            fi
+            export PATH="$INSTALL_DIR:$PATH"
+            progress_ok "path" "$INSTALL_DIR added to PATH (restart shell or: source $SHELL_CONFIG)"
+            ;;
+    esac
 
-    if step_done "verify"; then
-        : # already verified in a prior run — binary is present
+    if step_done "verify" && "$binary_path" --version >/dev/null 2>&1; then
+        : # verified in a prior run and the installed binary still responds
     elif command -v rote >/dev/null 2>&1; then
         local ver_output
         ver_output=$(rote --version 2>/dev/null || echo "unknown")
@@ -825,18 +822,35 @@ show_finale() {
     local total_time=$(elapsed)
     local failed_count=${#FAILED_STEPS[@]}
     local success_count=${#COMPLETED_STEPS[@]}
+    local binary_path="$INSTALL_DIR/rote"
+    # Probe the binary — $VERSION is only the resolved target, not what landed.
+    local probed_version
+    probed_version=$("$binary_path" --version 2>/dev/null) || probed_version=""
+    probed_version="${probed_version#rote }"
 
     # Clear progress line
     progress_clear
     echo "" >&2
 
     # Version + platform
-    if [ "$failed_count" -gt 0 ]; then
+    if [ -z "$probed_version" ]; then
+        # Broken outcome: report, skip the celebration copy, fail the run.
+        printf "  ${RED}✗${NC} no working rote binary at %s — check %s\n" \
+            "$binary_path" "$LOG_FILE" >&2
+        for fail in "${FAILED_STEPS[@]}"; do
+            printf "  ${RED}✗${NC} %s\n" "$fail" >&2
+        done
+        echo "" >&2
+        printf "  ${DIM}Re-run with --reset (or ROTE_RESET=1) to start fresh.${NC}\n" >&2
+        echo "" >&2
+        log "=== rote installation failed: no working rote binary ==="
+        exit 1
+    elif [ "$failed_count" -gt 0 ]; then
         printf "  ${GREEN}●${NC} rote v%s · %s · %d/%d steps\n" \
-            "$VERSION" "$PLATFORM_LABEL" "$success_count" "$STEP_COUNT" >&2
+            "$probed_version" "$PLATFORM_LABEL" "$success_count" "$STEP_COUNT" >&2
     else
         printf "  ${GREEN}●${NC} rote v%s · %s · %d steps\n" \
-            "$VERSION" "$PLATFORM_LABEL" "$STEP_COUNT" >&2
+            "$probed_version" "$PLATFORM_LABEL" "$STEP_COUNT" >&2
     fi
 
     # Show failures
