@@ -10,16 +10,13 @@ No MCP servers to host. No connector tax. Your agent calls the API, the run beco
 
 You can do everything below in about a coffee break.
 
-### 1. Get in
+### 1. Get rote
 
-rote is invite-only right now. Two paths:
+Install the CLI. Anyone can sign in and use rote.
 
 ```bash
-rote waitlist you@company.com    # Ask to be let in
-rote join <invite-code>          # You got an invite — use it
+curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh | bash
 ```
-
-If a teammate is already on rote, ask them to send you one with `rote invites send you@company.com`.
 
 ### 2. Set up
 
@@ -86,12 +83,11 @@ Same shape for flows (`rote registry flow ...`). Push to a private org, push to 
 
 ## the cheat sheet
 
-Twelve commands cover ~90% of what people actually do.
+Eleven commands cover ~90% of what people actually do.
 
 | I want to... | Run |
 |---|---|
-| Request an invite | `rote waitlist you@company.com` |
-| Join with an invite code | `rote join <code>` |
+| Install rote | `curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh \| bash` |
 | Set everything up | `rote setup` |
 | Create an adapter from OpenAPI | `rote adapter new <id> <spec-url>` |
 | Create an adapter from MCP | `rote adapter new-from-mcp <id> <url>` |
@@ -139,7 +135,6 @@ Combined with headless setup for fully unattended provisioning:
 
 ```bash
 rote setup --headless \
-  --claim-token rtp_<TOKEN> \
   --adapters github,gmail \
   --provider claude \
   --verify
@@ -207,9 +202,7 @@ Flows are versioned, parameterized, lint-checked, and survive the next rote rele
 rote registry adapter push  <path> <slug>       # Publish an adapter
 rote registry flow push     <path> <slug>       # Publish a flow
 rote registry org create    --slug my-org       # Private namespace
-rote registry org invite my-org user@x.com      # Invite a teammate
 rote registry org list                          # See orgs you belong to
-rote invites list                               # See pending invites you sent
 ```
 
 Adapters and flows both have fingerprints — when someone pulls a flow that depends on adapter `foo`, rote checks they have a compatible `foo` and offers to install it if not. Composition just works.
