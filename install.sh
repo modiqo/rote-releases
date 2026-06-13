@@ -869,18 +869,13 @@ show_finale() {
 
     echo "" >&2
     printf "  ${DIM}─────────────────────────────────────────────${NC}\n" >&2
-    printf "  ${BOLD}Welcome aboard.${NC} ${DIM}One quick step before we wire things up —${NC}\n" >&2
-    printf "  ${DIM}rote is invite-only for now, so we can onboard you properly.${NC}\n" >&2
+    printf "  ${BOLD}Welcome aboard.${NC} ${DIM}Time to wire things up.${NC}\n" >&2
     echo "" >&2
-    printf "  ${BOLD}Got a code?${NC}    ${GREEN}rote join <invite-code>${NC}\n" >&2
+    printf "  ${BOLD}Power user?${NC}    ${GREEN}rote setup${NC}\n" >&2
+    printf "  ${DIM}               Start connecting your APIs, credentials, and agent skills.${NC}\n" >&2
     echo "" >&2
-    printf "  ${BOLD}No code yet?${NC}   ${GREEN}rote waitlist <your-email>${NC}\n" >&2
-    printf "  ${DIM}               The line moves fast. Or skip it: grab a 10-min${NC}\n" >&2
-    printf "  ${DIM}               slot with the CEO and get onboarded in 60 seconds.${NC}\n" >&2
-    printf "  ${CYAN}               https://getrote.dev/founder${NC}\n" >&2
-    echo "" >&2
-    printf "  ${BOLD}Then:${NC}          ${GREEN}rote setup${NC}\n" >&2
-    printf "  ${DIM}               Adapters, tokens, AI wiring — done.${NC}\n" >&2
+    printf "  ${BOLD}Want a tour?${NC}   ${GREEN}rote how${NC}\n" >&2
+    printf "  ${DIM}               Take a step-by-step live tour before wiring APIs.${NC}\n" >&2
     echo "" >&2
     printf "  ${DIM}Full log:  %s${NC}\n" "$LOG_FILE" >&2
     echo "" >&2
