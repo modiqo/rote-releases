@@ -3,7 +3,7 @@ set -e
 
 # rote installer — Time to Agent™
 # Usage: curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh | bash
-# Non-interactive: ROTE_YES=1 curl -fsSL ... | bash
+# Piped installs default optional setup prompts to yes.
 
 # Configuration
 REPO="modiqo/rote-releases"
@@ -18,10 +18,12 @@ RELEASES_BASE_URL="${RELEASES_BASE_URL%/}"
 AUTO_YES="${ROTE_YES:-}"
 RESET_INSTALL="${ROTE_RESET:-}"
 FULL_INSTALL="${ROTE_FULL:-}"
-# ROTE_BARE skips post-install runtime setup (node/deno/stdio/sdk/shell).
-# Used by integration tests to verify the binary install path without the
-# heavy network-bound subcommands.
-BARE_INSTALL="${ROTE_BARE:-}"
+# --bare skips post-install runtime setup (node/deno/stdio/sdk/shell).
+BARE_INSTALL=""
+ONBOARD_SKILL_PATH=""
+ONBOARD_FETCH_STATUS=""
+ONBOARD_ENTRYPOINT="rote-setup/SKILL.md"
+INSTALL_NONINTERACTIVE=""
 
 # Parse --reset / --full flags
 for arg in "$@"; do
@@ -37,6 +39,7 @@ LOG_DIR="$ROTE_HOME/log"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/install.log"
 STATE_FILE="$LOG_DIR/install.state"
+BG_DIR=$(mktemp -d /tmp/rote_bg.XXXXXX)
 
 # Reset clears the checkpoint ledger so all steps re-run
 if [ -n "$RESET_INSTALL" ]; then
@@ -60,8 +63,8 @@ mark_done() {
     log "checkpoint: $1=ok"
 }
 
-# Restore cursor on exit
-trap 'printf "\033[?25h" >&2' EXIT
+# Restore cursor and remove per-run background job scratch files on exit.
+trap 'printf "\033[?25h" >&2; [ -n "${BG_DIR:-}" ] && rm -rf "$BG_DIR"' EXIT
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -185,7 +188,7 @@ progress_clear() {
 # downloads overlap while the foreground spinner covers the longest one.
 #
 # bg_start "phase" "message" command [args...]
-#   Forks the command, writes pid/meta to /tmp/rote_bg_<phase>.
+#   Forks the command, writes pid/meta to per-install scratch files.
 #
 # bg_collect "phase"
 #   Waits for the job, prints ● or ✗, returns exit code of the job.
@@ -193,22 +196,24 @@ progress_clear() {
 bg_start() {
     local phase="$1"; shift
     local message="$1"; shift
-    local pid_file="/tmp/rote_bg_${phase}.pid"
-    local out_file="/tmp/rote_bg_${phase}.out"
-    local msg_file="/tmp/rote_bg_${phase}.msg"
+    local pid_file="$BG_DIR/${phase}.pid"
+    local out_file="$BG_DIR/${phase}.out"
+    local err_file="$BG_DIR/${phase}.err"
+    local msg_file="$BG_DIR/${phase}.msg"
 
     echo "$message" > "$msg_file"
     log "→ [bg:$phase] starting: $*"
 
-    "$@" > "$out_file" 2>>"$LOG_FILE" &
+    "$@" > "$out_file" 2>"$err_file" &
     echo $! > "$pid_file"
 }
 
 bg_collect() {
     local phase="$1"
-    local pid_file="/tmp/rote_bg_${phase}.pid"
-    local out_file="/tmp/rote_bg_${phase}.out"
-    local msg_file="/tmp/rote_bg_${phase}.msg"
+    local pid_file="$BG_DIR/${phase}.pid"
+    local out_file="$BG_DIR/${phase}.out"
+    local err_file="$BG_DIR/${phase}.err"
+    local msg_file="$BG_DIR/${phase}.msg"
 
     local pid message rc=0
     pid=$(cat "$pid_file" 2>/dev/null || echo "")
@@ -217,8 +222,6 @@ bg_collect() {
     if [ -n "$pid" ]; then
         wait "$pid" 2>/dev/null || rc=$?
     fi
-
-    rm -f "$pid_file" "$out_file" "$msg_file"
 
     STEP_COUNT=$((STEP_COUNT + 1))
 
@@ -231,9 +234,19 @@ bg_collect() {
     else
         FAILED_STEPS+=("$phase · $message")
         log "✗ [bg:$phase] $message (exit $rc)"
+        if [ -s "$out_file" ]; then
+            log "stdout [bg:$phase]:"
+            cat "$out_file" >> "$LOG_FILE"
+        fi
+        if [ -s "$err_file" ]; then
+            log "stderr [bg:$phase]:"
+            cat "$err_file" >> "$LOG_FILE"
+        fi
         printf "\r  ${RED}✗${NC} ${DIM}%s${NC}  %-10s %s\033[K" \
             "$(elapsed)" "$phase" "$message" >&2
     fi
+
+    rm -f "$pid_file" "$out_file" "$err_file" "$msg_file"
 
     return "$rc"
 }
@@ -245,6 +258,27 @@ prompt_user() {
     else
         read -r "$@" </dev/tty
     fi
+}
+
+has_prompt_tty() {
+    if [ -t 0 ]; then
+        return 0
+    fi
+    [ -e /dev/tty ] || return 1
+    { : </dev/tty >/dev/tty; } 2>/dev/null
+}
+
+install_is_noninteractive() {
+    if [ -n "$AUTO_YES" ]; then
+        return 0
+    fi
+    if [ ! -t 0 ]; then
+        return 0
+    fi
+    if has_prompt_tty; then
+        return 1
+    fi
+    return 0
 }
 
 # ─── Legacy rc cleanup ───────────────────────────────────────────────────────
@@ -280,6 +314,22 @@ detect_shell_config() {
             else echo "$HOME/.bash_profile"; fi
             ;;
         *) echo "" ;;
+    esac
+}
+
+shell_setup_supported() {
+    case "$SHELL" in
+        */zsh|*/bash) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+shell_display_name() {
+    local shell_name="${SHELL##*/}"
+    case "$shell_name" in
+        fish) echo "Fish" ;;
+        "") echo "unknown shell" ;;
+        *) echo "$shell_name" ;;
     esac
 }
 
@@ -371,8 +421,23 @@ WANT_SHELL=""
 
 collect_preferences() {
     if [ -n "$AUTO_YES" ]; then
+        INSTALL_NONINTERACTIVE="1"
         WANT_DENO="Y"
         WANT_SHELL="Y"
+        return
+    fi
+    if [ ! -t 0 ]; then
+        INSTALL_NONINTERACTIVE="1"
+        WANT_DENO="Y"
+        WANT_SHELL="Y"
+        log "piped stdin detected; defaulting setup questions to yes"
+        return
+    fi
+    if ! has_prompt_tty; then
+        INSTALL_NONINTERACTIVE="1"
+        WANT_DENO="Y"
+        WANT_SHELL="Y"
+        log "non-interactive install detected; defaulting setup questions to yes"
         return
     fi
 
@@ -432,6 +497,92 @@ verify_sha256() {
         echo "checksum mismatch at $checksum_url: expected $expected, got $actual" >&2
         return 1
     fi
+}
+
+onboard_fetch_unavailable() {
+    local reason="$1"
+    local cleanup_dir="${2:-}"
+    ONBOARD_FETCH_STATUS="$reason"
+    log "onboard: unavailable ($reason)"
+    if [ -n "$cleanup_dir" ]; then
+        rm -rf "$cleanup_dir"
+    fi
+    return 0
+}
+
+# Stage the binary-bundled skills to a temp dir so an LLM agent driving the
+# install can read the onboarding entrypoint. No network: the installed rote
+# binary writes its embedded skills, so content always matches the version.
+stage_onboarding_skills() {
+    local rote_bin onboard_dir entrypoint_path safe_version
+
+    case "$VERSION" in
+        *[!A-Za-z0-9._-]*|"") safe_version="unknown" ;;
+        *) safe_version="$VERSION" ;;
+    esac
+
+    if [ "$OS" = "windows" ]; then
+        rote_bin="$INSTALL_DIR/rote.exe"
+    else
+        rote_bin="$INSTALL_DIR/rote"
+    fi
+    if [ ! -x "$rote_bin" ]; then
+        onboard_fetch_unavailable "rote binary not found at $rote_bin"
+        return 0
+    fi
+
+    if [ -n "${ROTE_ONBOARD_DIR:-}" ]; then
+        # Caller owns this parent; installer only removes generated children.
+        case "$ROTE_ONBOARD_DIR" in
+            /)
+                onboard_fetch_unavailable "refusing ROTE_ONBOARD_DIR=$ROTE_ONBOARD_DIR"
+                return 0
+                ;;
+            /*) ;;
+            *)
+                onboard_fetch_unavailable "ROTE_ONBOARD_DIR must be an absolute path"
+                return 0
+                ;;
+        esac
+        if [ "${ROTE_ONBOARD_DIR%/}" = "${HOME%/}" ]; then
+            onboard_fetch_unavailable "refusing ROTE_ONBOARD_DIR=$ROTE_ONBOARD_DIR"
+            return 0
+        fi
+        if ! mkdir -p "$ROTE_ONBOARD_DIR" 2>>"$LOG_FILE"; then
+            onboard_fetch_unavailable "could not prepare $ROTE_ONBOARD_DIR"
+            return 0
+        fi
+        if ! onboard_dir="$(mktemp -d "${ROTE_ONBOARD_DIR%/}/rote-onboard-v${safe_version}.XXXXXX")"; then
+            onboard_fetch_unavailable "could not create staging directory"
+            return 0
+        fi
+    else
+        # Unpredictable staging path avoids symlink games in shared temp dirs.
+        if ! onboard_dir="$(mktemp -d "${TMPDIR:-/tmp}/rote-onboard-v${safe_version}.XXXXXX")"; then
+            onboard_fetch_unavailable "could not create staging directory"
+            return 0
+        fi
+    fi
+    if ! "$rote_bin" install skill --path "$onboard_dir" --force >>"$LOG_FILE" 2>&1; then
+        onboard_fetch_unavailable "bundled skill install failed" "$onboard_dir"
+        return 0
+    fi
+
+    entrypoint_path="$onboard_dir/$ONBOARD_ENTRYPOINT"
+    if [ ! -f "$entrypoint_path" ]; then
+        # Older binaries write the main skill directly at the path root.
+        if [ -f "$onboard_dir/SKILL.md" ]; then
+            entrypoint_path="$onboard_dir/SKILL.md"
+        else
+            onboard_fetch_unavailable "$ONBOARD_ENTRYPOINT not staged" "$onboard_dir"
+            return 0
+        fi
+    fi
+
+    ONBOARD_SKILL_PATH="$entrypoint_path"
+    ONBOARD_FETCH_STATUS="ok"
+    log "onboard: staged $ONBOARD_SKILL_PATH"
+    return 0
 }
 
 json_escape() {
@@ -679,7 +830,7 @@ install_rote() {
             # Check if any bg job is still running
             local any_running=0
             for phase in node deno stdio; do
-                local pid_file="/tmp/rote_bg_${phase}.pid"
+                local pid_file="$BG_DIR/${phase}.pid"
                 if [ -f "$pid_file" ]; then
                     local pid
                     pid=$(cat "$pid_file" 2>/dev/null || echo "")
@@ -788,6 +939,15 @@ install_rote() {
             if step_done "shell"; then
                 COMPLETED_STEPS+=("shell"); STEP_COUNT=$((STEP_COUNT + 1))
                 log "· [shell] already done, skipping"
+            elif ! shell_setup_supported; then
+                local shell_name
+                shell_name=$(shell_display_name)
+                STEP_COUNT=$((STEP_COUNT + 1))
+                COMPLETED_STEPS+=("shell")
+                mark_done "shell_skipped"
+                log "· [shell] Skipped ($shell_name unsupported)"
+                printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
+                    "$(elapsed)" "shell" "Skipped ($shell_name unsupported)" >&2
             else
                 progress "shell" "Setting up shell integration..." \
                     rote shell-setup || true
@@ -819,7 +979,6 @@ install_rote() {
 # Finale
 # ═══════════════════════════════════════════════════════════════════════════════
 show_finale() {
-    local total_time=$(elapsed)
     local failed_count=${#FAILED_STEPS[@]}
     local success_count=${#COMPLETED_STEPS[@]}
     local binary_path="$INSTALL_DIR/rote"
@@ -860,14 +1019,6 @@ show_finale() {
 
     echo "" >&2
 
-    # Hero metric
-    if [ "$failed_count" -gt 0 ]; then
-        printf "  ${BOLD}Time to Agent™${NC}  ${YELLOW}%s${NC} ${DIM}(with warnings)${NC}\n" "$total_time" >&2
-    else
-        printf "  ${BOLD}Time to Agent™${NC}  ${GREEN}%s${NC}\n" "$total_time" >&2
-    fi
-
-    echo "" >&2
     printf "  ${DIM}─────────────────────────────────────────────${NC}\n" >&2
     printf "  ${BOLD}Welcome aboard.${NC} ${DIM}Time to wire things up.${NC}\n" >&2
     echo "" >&2
@@ -876,6 +1027,29 @@ show_finale() {
     echo "" >&2
     printf "  ${BOLD}Want a tour?${NC}   ${GREEN}rote how${NC}\n" >&2
     printf "  ${DIM}               Take a step-by-step live tour before wiring APIs.${NC}\n" >&2
+    echo "" >&2
+    printf "  ${BOLD}No code yet?${NC}   ${GREEN}rote waitlist <your-email>${NC}\n" >&2
+    printf "  ${DIM}               The line moves fast. Or skip it: grab a 10-min${NC}\n" >&2
+    printf "  ${DIM}               slot with the CEO and get onboarded in 60 seconds.${NC}\n" >&2
+    printf "  ${CYAN}               https://getrote.dev/founder${NC}\n" >&2
+    echo "" >&2
+    printf "  ${BOLD}Then:${NC}          ${GREEN}rote setup${NC}\n" >&2
+    printf "  ${DIM}               Adapters, tokens, AI wiring — done.${NC}\n" >&2
+    printf "  ${BOLD}Help:${NC}          ${GREEN}rote setup --help${NC}\n" >&2
+    if [ -n "$INSTALL_NONINTERACTIVE" ]; then
+        echo "" >&2
+        if [ -n "$ONBOARD_SKILL_PATH" ]; then
+            printf "  ${BOLD}LLM-assisted:${NC} ${GREEN}%s${NC}\n" "$ONBOARD_SKILL_PATH" >&2
+            printf "  ${DIM}               Agent: MUST read this onboarding SKILL.md before continuing setup.${NC}\n" >&2
+        else
+            printf "  ${BOLD}LLM-assisted:${NC} ${YELLOW}onboarding skill unavailable${NC}\n" >&2
+            if [ -n "$ONBOARD_FETCH_STATUS" ]; then
+                printf "  ${DIM}               %s. Use rote setup --help as fallback.${NC}\n" "$ONBOARD_FETCH_STATUS" >&2
+            else
+                printf "  ${DIM}               Use rote setup --help as fallback.${NC}\n" >&2
+            fi
+        fi
+    fi
     echo "" >&2
     printf "  ${DIM}Full log:  %s${NC}\n" "$LOG_FILE" >&2
     echo "" >&2
@@ -888,6 +1062,14 @@ main() {
     echo "" >&2
     printf "  ${BOLD}rote installer${NC} ${DIM}· Execution Context Engineering${NC}\n" >&2
     echo "" >&2
+
+    if install_is_noninteractive; then
+        INSTALL_NONINTERACTIVE="1"
+        if [ -z "$BARE_INSTALL" ]; then
+            printf "  ${BOLD}Non-interactive:${NC} ${GREEN}setup prompts defaulted to yes${NC}\n" >&2
+            echo "" >&2
+        fi
+    fi
 
     # Show resume notice if a prior run was interrupted
     if [ -f "$STATE_FILE" ] && [ -z "$RESET_INSTALL" ]; then
@@ -945,8 +1127,8 @@ main() {
 
     # Collect user preferences upfront — before any downloads start.
     # Interactive: asks two Y/n questions then begins parallel phase.
-    # Non-interactive (ROTE_YES=1): skips questions, defaults all to Y.
-    # Bare (ROTE_BARE=1 / --bare): runtime + shell blocks are skipped, so
+    # Non-interactive stdin, or ROTE_YES=1, skips questions and defaults all to Y.
+    # Bare (--bare): runtime + shell blocks are skipped, so
     # asking would just collect ignored answers.
     if [ -n "$BARE_INSTALL" ]; then
         WANT_DENO="N"
@@ -957,6 +1139,11 @@ main() {
 
     # Install binary + run parallel phase
     install_rote
+
+    # Best-effort local context for LLM-assisted setup.
+    if [ -n "$INSTALL_NONINTERACTIVE" ]; then
+        stage_onboarding_skills
+    fi
 
     # Finale
     show_finale
