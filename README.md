@@ -83,11 +83,12 @@ Same shape for flows (`rote registry flow ...`). Push to a private org, push to 
 
 ## the cheat sheet
 
-Eleven commands cover ~90% of what people actually do.
+Twelve commands cover ~90% of what people actually do.
 
 | I want to... | Run |
 |---|---|
 | Install rote | `curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh \| bash` |
+| Install rote with browser support | `curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh \| bash -s -- --full` |
 | Set everything up | `rote setup` |
 | Create an adapter from OpenAPI | `rote adapter new <id> <spec-url>` |
 | Create an adapter from MCP | `rote adapter new-from-mcp <id> <url>` |
@@ -125,10 +126,48 @@ rote guidance     # Deep-dive topics: agent, adapters, browser, registry, ...
 curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh | bash
 ```
 
+### Browser-ready install
+
+The default install skips the Playwright browser download. Use the full install
+when you want `rote browse`, `rote browser ...`, and the `rote-browse` agent
+skill ready from the CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh | bash -s -- --full
+rote install skill --global --target '*' --force
+```
+
+If rote is already installed, add the browser pieces and refresh the skills:
+
+```bash
+rote setup --full
+rote install skill --global --target '*' --force
+```
+
+Use `--project` instead of `--global` if you only want the skills in the current
+repo. To attach to an already-open logged-in browser, run:
+
+```bash
+rote browser attach setup --method extension --browser chrome
+```
+
+Smoke test:
+
+```bash
+rote browse --headed https://example.com
+```
+
 ### Non-interactive (CI, VMs, agent swarms)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh | ROTE_YES=1 bash
+```
+
+Browser-ready, non-interactive install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh | ROTE_YES=1 ROTE_FULL=1 bash
+rote install skill --global --target '*' --force
 ```
 
 Combined with headless setup for fully unattended provisioning:
