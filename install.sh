@@ -3,7 +3,7 @@ set -e
 
 # rote installer — Time to Agent™
 # Usage: curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh | bash
-# Piped installs default optional setup prompts to yes.
+# Piped installs still prompt through /dev/tty when a prompt TTY is available.
 
 # Configuration
 REPO="modiqo/rote-releases"
@@ -272,9 +272,6 @@ install_is_noninteractive() {
     if [ -n "$AUTO_YES" ]; then
         return 0
     fi
-    if [ ! -t 0 ]; then
-        return 0
-    fi
     if has_prompt_tty; then
         return 1
     fi
@@ -424,13 +421,6 @@ collect_preferences() {
         INSTALL_NONINTERACTIVE="1"
         WANT_DENO="Y"
         WANT_SHELL="Y"
-        return
-    fi
-    if [ ! -t 0 ]; then
-        INSTALL_NONINTERACTIVE="1"
-        WANT_DENO="Y"
-        WANT_SHELL="Y"
-        log "piped stdin detected; defaulting setup questions to yes"
         return
     fi
     if ! has_prompt_tty; then
@@ -1127,7 +1117,7 @@ main() {
 
     # Collect user preferences upfront — before any downloads start.
     # Interactive: asks two Y/n questions then begins parallel phase.
-    # Non-interactive stdin, or ROTE_YES=1, skips questions and defaults all to Y.
+    # No prompt TTY, or ROTE_YES=1, skips questions and defaults all to Y.
     # Bare (--bare): runtime + shell blocks are skipped, so
     # asking would just collect ignored answers.
     if [ -n "$BARE_INSTALL" ]; then
