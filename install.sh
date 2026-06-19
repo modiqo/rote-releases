@@ -1018,11 +1018,6 @@ show_finale() {
     printf "  ${BOLD}Want a tour?${NC}   ${GREEN}rote how${NC}\n" >&2
     printf "  ${DIM}               Take a step-by-step live tour before wiring APIs.${NC}\n" >&2
     echo "" >&2
-    printf "  ${BOLD}No code yet?${NC}   ${GREEN}rote waitlist <your-email>${NC}\n" >&2
-    printf "  ${DIM}               The line moves fast. Or skip it: grab a 10-min${NC}\n" >&2
-    printf "  ${DIM}               slot with the CEO and get onboarded in 60 seconds.${NC}\n" >&2
-    printf "  ${CYAN}               https://getrote.dev/founder${NC}\n" >&2
-    echo "" >&2
     printf "  ${BOLD}Then:${NC}          ${GREEN}rote setup${NC}\n" >&2
     printf "  ${DIM}               Adapters, tokens, AI wiring — done.${NC}\n" >&2
     printf "  ${BOLD}Help:${NC}          ${GREEN}rote setup --help${NC}\n" >&2
