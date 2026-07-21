@@ -20,9 +20,9 @@ RESET_INSTALL="${ROTE_RESET:-}"
 FULL_INSTALL="${ROTE_FULL:-}"
 # --bare skips post-install runtime setup (node/deno/stdio/sdk/shell).
 BARE_INSTALL=""
-ONBOARD_SKILL_PATH=""
-ONBOARD_FETCH_STATUS=""
-ONBOARD_ENTRYPOINT="rote-setup/SKILL.md"
+SETUP_SKILL_PATH=""
+SETUP_SKILL_STATUS=""
+SETUP_ENTRYPOINT="rote-setup/SKILL.md"
 INSTALL_NONINTERACTIVE=""
 
 # Parse --reset / --full flags
@@ -489,11 +489,11 @@ verify_sha256() {
     fi
 }
 
-onboard_fetch_unavailable() {
+setup_skill_unavailable() {
     local reason="$1"
     local cleanup_dir="${2:-}"
-    ONBOARD_FETCH_STATUS="$reason"
-    log "onboard: unavailable ($reason)"
+    SETUP_SKILL_STATUS="$reason"
+    log "setup skill: unavailable ($reason)"
     if [ -n "$cleanup_dir" ]; then
         rm -rf "$cleanup_dir"
     fi
@@ -501,10 +501,10 @@ onboard_fetch_unavailable() {
 }
 
 # Stage the binary-bundled skills to a temp dir so an LLM agent driving the
-# install can read the onboarding entrypoint. No network: the installed rote
+# install can read the setup entrypoint. No network: the installed rote
 # binary writes its embedded skills, so content always matches the version.
-stage_onboarding_skills() {
-    local rote_bin onboard_dir entrypoint_path safe_version
+stage_setup_skills() {
+    local rote_bin setup_dir entrypoint_path safe_version setup_parent
 
     case "$VERSION" in
         *[!A-Za-z0-9._-]*|"") safe_version="unknown" ;;
@@ -517,61 +517,65 @@ stage_onboarding_skills() {
         rote_bin="$INSTALL_DIR/rote"
     fi
     if [ ! -x "$rote_bin" ]; then
-        onboard_fetch_unavailable "rote binary not found at $rote_bin"
+        setup_skill_unavailable "rote binary not found at $rote_bin"
         return 0
     fi
 
-    if [ -n "${ROTE_ONBOARD_DIR:-}" ]; then
+    setup_parent="${ROTE_SETUP_SKILL_DIR:-${ROTE_ONBOARD_DIR:-}}"
+    if [ -n "$setup_parent" ]; then
         # Caller owns this parent; installer only removes generated children.
-        case "$ROTE_ONBOARD_DIR" in
+        case "$setup_parent" in
             /)
-                onboard_fetch_unavailable "refusing ROTE_ONBOARD_DIR=$ROTE_ONBOARD_DIR"
+                setup_skill_unavailable "refusing setup skill directory $setup_parent"
                 return 0
                 ;;
             /*) ;;
             *)
-                onboard_fetch_unavailable "ROTE_ONBOARD_DIR must be an absolute path"
+                setup_skill_unavailable "setup skill directory must be an absolute path"
                 return 0
                 ;;
         esac
-        if [ "${ROTE_ONBOARD_DIR%/}" = "${HOME%/}" ]; then
-            onboard_fetch_unavailable "refusing ROTE_ONBOARD_DIR=$ROTE_ONBOARD_DIR"
+        if [ "${setup_parent%/}" = "${HOME%/}" ]; then
+            setup_skill_unavailable "refusing setup skill directory $setup_parent"
             return 0
         fi
-        if ! mkdir -p "$ROTE_ONBOARD_DIR" 2>>"$LOG_FILE"; then
-            onboard_fetch_unavailable "could not prepare $ROTE_ONBOARD_DIR"
+        if ! mkdir -p "$setup_parent" 2>>"$LOG_FILE"; then
+            setup_skill_unavailable "could not prepare $setup_parent"
             return 0
         fi
-        if ! onboard_dir="$(mktemp -d "${ROTE_ONBOARD_DIR%/}/rote-onboard-v${safe_version}.XXXXXX")"; then
-            onboard_fetch_unavailable "could not create staging directory"
+        if ! setup_dir="$(mktemp -d "${setup_parent%/}/rote-skills-v${safe_version}.XXXXXX")"; then
+            setup_skill_unavailable "could not create staging directory"
             return 0
         fi
     else
         # Unpredictable staging path avoids symlink games in shared temp dirs.
-        if ! onboard_dir="$(mktemp -d "${TMPDIR:-/tmp}/rote-onboard-v${safe_version}.XXXXXX")"; then
-            onboard_fetch_unavailable "could not create staging directory"
+        if ! setup_dir="$(mktemp -d "${TMPDIR:-/tmp}/rote-skills-v${safe_version}.XXXXXX")"; then
+            setup_skill_unavailable "could not create staging directory"
             return 0
         fi
     fi
-    if ! "$rote_bin" install skill --path "$onboard_dir" --force >>"$LOG_FILE" 2>&1; then
-        onboard_fetch_unavailable "bundled skill install failed" "$onboard_dir"
-        return 0
+    if ! "$rote_bin" install skill --path "$setup_dir" --package '*' --force >>"$LOG_FILE" 2>&1; then
+        log "setup skill: package-aware staging failed; retrying legacy install"
+        if ! "$rote_bin" install skill --path "$setup_dir" --force >>"$LOG_FILE" 2>&1; then
+            setup_skill_unavailable "bundled skill install failed" "$setup_dir"
+            return 0
+        fi
     fi
 
-    entrypoint_path="$onboard_dir/$ONBOARD_ENTRYPOINT"
+    entrypoint_path="$setup_dir/$SETUP_ENTRYPOINT"
     if [ ! -f "$entrypoint_path" ]; then
         # Older binaries write the main skill directly at the path root.
-        if [ -f "$onboard_dir/SKILL.md" ]; then
-            entrypoint_path="$onboard_dir/SKILL.md"
+        if [ -f "$setup_dir/SKILL.md" ]; then
+            entrypoint_path="$setup_dir/SKILL.md"
         else
-            onboard_fetch_unavailable "$ONBOARD_ENTRYPOINT not staged" "$onboard_dir"
+            setup_skill_unavailable "$SETUP_ENTRYPOINT not staged" "$setup_dir"
             return 0
         fi
     fi
 
-    ONBOARD_SKILL_PATH="$entrypoint_path"
-    ONBOARD_FETCH_STATUS="ok"
-    log "onboard: staged $ONBOARD_SKILL_PATH"
+    SETUP_SKILL_PATH="$entrypoint_path"
+    SETUP_SKILL_STATUS="ok"
+    log "setup skill: staged $SETUP_SKILL_PATH"
     return 0
 }
 
@@ -1023,13 +1027,13 @@ show_finale() {
     printf "  ${BOLD}Help:${NC}          ${GREEN}rote setup --help${NC}\n" >&2
     if [ -n "$INSTALL_NONINTERACTIVE" ]; then
         echo "" >&2
-        if [ -n "$ONBOARD_SKILL_PATH" ]; then
-            printf "  ${BOLD}LLM-assisted:${NC} ${GREEN}%s${NC}\n" "$ONBOARD_SKILL_PATH" >&2
-            printf "  ${DIM}               Agent: MUST read this onboarding SKILL.md before continuing setup.${NC}\n" >&2
+        if [ -n "$SETUP_SKILL_PATH" ]; then
+            printf "  ${BOLD}LLM-assisted:${NC} ${GREEN}%s${NC}\n" "$SETUP_SKILL_PATH" >&2
+            printf "  ${DIM}               Agent: MUST read this setup SKILL.md before continuing setup.${NC}\n" >&2
         else
-            printf "  ${BOLD}LLM-assisted:${NC} ${YELLOW}onboarding skill unavailable${NC}\n" >&2
-            if [ -n "$ONBOARD_FETCH_STATUS" ]; then
-                printf "  ${DIM}               %s. Use rote setup --help as fallback.${NC}\n" "$ONBOARD_FETCH_STATUS" >&2
+            printf "  ${BOLD}LLM-assisted:${NC} ${YELLOW}setup skill unavailable${NC}\n" >&2
+            if [ -n "$SETUP_SKILL_STATUS" ]; then
+                printf "  ${DIM}               %s. Use rote setup --help as fallback.${NC}\n" "$SETUP_SKILL_STATUS" >&2
             else
                 printf "  ${DIM}               Use rote setup --help as fallback.${NC}\n" >&2
             fi
@@ -1127,7 +1131,7 @@ main() {
 
     # Best-effort local context for LLM-assisted setup.
     if [ -n "$INSTALL_NONINTERACTIVE" ]; then
-        stage_onboarding_skills
+        stage_setup_skills
     fi
 
     # Finale
