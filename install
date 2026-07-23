@@ -18,18 +18,23 @@ RELEASES_BASE_URL="${RELEASES_BASE_URL%/}"
 AUTO_YES="${ROTE_YES:-}"
 RESET_INSTALL="${ROTE_RESET:-}"
 FULL_INSTALL="${ROTE_FULL:-}"
-# --bare skips post-install runtime setup (node/deno/stdio/sdk/shell).
+FULL_INSTALL_EXPLICIT=""
+[ -n "$FULL_INSTALL" ] && FULL_INSTALL_EXPLICIT="1"
+SKIP_BROWSER="${ROTE_SKIP_BROWSER:-}"
+# --bare skips post-install runtime setup (node/deno/stdio/sdk/shell/browser).
 BARE_INSTALL=""
 SETUP_SKILL_PATH=""
 SETUP_SKILL_STATUS=""
 SETUP_ENTRYPOINT="rote-setup/SKILL.md"
 INSTALL_NONINTERACTIVE=""
+INSTALL_PROFILE_DEFAULTED=""
+FULL_SETUP_UNSUPPORTED=""
 
 # Parse --reset / --full flags
 for arg in "$@"; do
     case "$arg" in
         --reset) RESET_INSTALL="1" ;;
-        --full)  FULL_INSTALL="1" ;;
+        --full)  FULL_INSTALL="1"; FULL_INSTALL_EXPLICIT="1" ;;
         --bare)  BARE_INSTALL="1" ;;
     esac
 done
@@ -282,8 +287,8 @@ install_is_noninteractive() {
 # Strip stale `# rote completion` + `eval "$(rote completion …)"` blocks left
 # behind by older installers. Mirrors `clean_legacy_completion` in
 # crates/rote-cli/src/cli/shell/generator.rs:282-316. Runs from main() so
-# --bare and WANT_SHELL=N paths (which never invoke `rote shell-setup`) still
-# get the cleanup. Keep patterns in sync with `legacy_patterns` there.
+# --bare installs still get the cleanup. Keep patterns in sync with
+# `legacy_patterns` there.
 clean_legacy_completion() {
     for f in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc"; do
         [ -f "$f" ] && [ -w "$f" ] || continue
@@ -367,89 +372,193 @@ detect_platform() {
     log "Platform: $PLATFORM_LABEL, Artifact: $ARTIFACT"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Detect Playwright browser
-# ═══════════════════════════════════════════════════════════════════════════════
-detect_playwright_browser() {
-    if [ -n "$ROTE_PLAYWRIGHT_BROWSER" ]; then
-        echo "$ROTE_PLAYWRIGHT_BROWSER"
+os_release_value() {
+    local key="$1"
+    local file="$2"
+    local value
+    value=$(awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$file" 2>/dev/null || true)
+    case "$value" in
+        \"*\") value="${value#\"}"; value="${value%\"}" ;;
+        \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    esac
+    printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
+}
+
+detect_full_setup_capability() {
+    local capability_os="$OS"
+    local capability_arch="$ARCH"
+    local release_file="/etc/os-release"
+    local macos_version=""
+    if [ "${ROTE_TEST_HARNESS:-}" = "install-platform-fixtures-v1" ]; then
+        capability_os="${ROTE_TEST_PLATFORM_OS:-$capability_os}"
+        capability_arch="${ROTE_TEST_PLATFORM_ARCH:-$capability_arch}"
+        release_file="${ROTE_TEST_OS_RELEASE_FILE:-$release_file}"
+        macos_version="${ROTE_TEST_MACOS_VERSION:-}"
+    fi
+    FULL_SETUP_SUPPORTED=""
+    FULL_SETUP_UNSUPPORTED=""
+    FULL_SETUP_HOST="$capability_os"
+
+    case "$capability_arch" in
+        x86_64|aarch64) ;;
+        *)
+            FULL_SETUP_HOST="architecture '$capability_arch'"
+            return
+            ;;
+    esac
+
+    case "$capability_os" in
+        macos)
+            if [ "${ROTE_TEST_HARNESS:-}" != "install-platform-fixtures-v1" ]; then
+                macos_version=$(sw_vers -productVersion 2>/dev/null || true)
+            fi
+            if [ -z "$macos_version" ]; then
+                FULL_SETUP_HOST="unknown macOS version"
+                return
+            fi
+            local macos_major="${macos_version%%.*}"
+            case "$macos_major" in
+                ''|*[!0-9]*|0|1|2|3|4|5|6|7|8|9|10|11|12|13)
+                    FULL_SETUP_HOST="macOS $macos_version"
+                    return
+                    ;;
+                *) FULL_SETUP_SUPPORTED="1" ;;
+            esac
+            return
+            ;;
+        linux) ;;
+        *) return ;;
+    esac
+
+    if [ ! -r "$release_file" ]; then
+        FULL_SETUP_HOST="unknown Linux distribution"
         return
     fi
 
-    local browser="chrome"
+    local distro_id distro_version
+    distro_id=$(os_release_value ID "$release_file")
+    distro_version=$(os_release_value VERSION_ID "$release_file")
+    FULL_SETUP_HOST="Linux distribution '${distro_id:-unknown}${distro_version:+ $distro_version}'"
 
-    if [ "$OS" = "linux" ] && [ -f /etc/os-release ]; then
-        local distro_id=""
-        local version_id=""
-
-        while IFS='=' read -r key value; do
-            value="${value%\"}"
-            value="${value#\"}"
-            case "$key" in
-                ID) distro_id="$value" ;;
-                VERSION_ID) version_id="$value" ;;
+    case "$distro_id" in
+        ubuntu)
+            case "$distro_version" in
+                22.04|24.04|26.04) FULL_SETUP_SUPPORTED="1" ;;
             esac
-        done < /etc/os-release
-
-        if [ "$distro_id" = "ubuntu" ]; then
-            case "$version_id" in
-                22.04|24.04|26.04)
-                    browser="chrome"
-                    ;;
-                *)
-                    browser="firefox"
-                    log "Ubuntu $version_id is not in Playwright's supported list for Chrome"
-                    log "Falling back to Firefox"
-                    ;;
+            return
+            ;;
+        debian)
+            case "$distro_version" in
+                12|13) FULL_SETUP_SUPPORTED="1" ;;
             esac
+            return
+            ;;
+    esac
+}
+
+print_unsupported_full_guidance() {
+    printf "  ${YELLOW}!${NC} %s does not support local Full browser setup.\n" "$FULL_SETUP_HOST" >&2
+    printf "    rote local Full supports macOS 14+ and exact Debian 12/13 or Ubuntu 22.04/24.04/26.04 hosts on x86-64 or arm64.\n" >&2
+    printf "    Playwright upstream supports additional hosts, but rote cannot safely install its managed local runtime here.\n" >&2
+    printf "    Use this CLI-only install, or run ${GREEN}rote setup --full${NC} on a supported browser host and use that host for browser work.\n" >&2
+}
+
+print_browser_skipped_guidance() {
+    local binary_path="$1"
+    if [ -n "$FULL_SETUP_UNSUPPORTED" ]; then
+        printf "  Use a supported browser host for browser work; run rote setup --full on that host.\n" >&2
+    else
+        printf "  Complete it later: \"%s\" setup --full\n" "$binary_path" >&2
+    fi
+}
+
+binary_supports_full_setup() {
+    local binary_path="$1"
+    local help_output
+
+    if help_output=$("$binary_path" setup --help 2>&1); then
+        if printf '%s\n' "$help_output" | grep -Eq '^[[:space:]]*--full([[:space:]]{2,}|$)'; then
+            return 0
         fi
     fi
 
-    echo "$browser"
+    if help_output=$("$binary_path" help setup 2>&1); then
+        if printf '%s\n' "$help_output" | grep -Eq '^[[:space:]]*--full([[:space:]]{2,}|$)'; then
+            return 0
+        fi
+    fi
+
+    return 1
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Collect user preferences upfront (interactive only)
+# Select the standard installation profile
 # ═══════════════════════════════════════════════════════════════════════════════
-#
-# Populated by collect_preferences(). Read by install_rote().
-WANT_DENO=""
-WANT_SHELL=""
+validate_install_profile() {
+    if [ -n "$FULL_INSTALL" ] && [ -n "$SKIP_BROWSER" ]; then
+        printf "  ${RED}✗${NC} ROTE_FULL and ROTE_SKIP_BROWSER cannot both be set\n" >&2
+        return 1
+    fi
+}
 
-collect_preferences() {
-    if [ -n "$AUTO_YES" ]; then
-        INSTALL_NONINTERACTIVE="1"
-        WANT_DENO="Y"
-        WANT_SHELL="Y"
+apply_platform_install_profile() {
+    if [ -n "$FULL_SETUP_SUPPORTED" ]; then
         return
     fi
-    if ! has_prompt_tty; then
-        INSTALL_NONINTERACTIVE="1"
-        WANT_DENO="Y"
-        WANT_SHELL="Y"
-        log "non-interactive install detected; defaulting setup questions to yes"
+    FULL_SETUP_UNSUPPORTED="1"
+    if [ -n "$FULL_INSTALL_EXPLICIT" ]; then
+        printf "  ${RED}✗${NC} Full browser setup is unavailable on %s.\n" "$FULL_SETUP_HOST" >&2
+        printf "    rote local Full supports macOS 14+ and exact Debian 12/13 or Ubuntu 22.04/24.04/26.04 hosts on x86-64 or arm64.\n" >&2
+        printf "    Playwright upstream supports additional hosts, but rote cannot safely install its managed local runtime here.\n" >&2
+        printf "    No release was downloaded and no browser runtime changes were made.\n" >&2
+        printf "    Re-run this installer with ${GREEN}ROTE_SKIP_BROWSER=1${NC}, or use ${GREEN}rote setup --full${NC} on a supported browser host.\n" >&2
+        return 1
+    fi
+
+    print_unsupported_full_guidance
+    if [ -z "$SKIP_BROWSER" ]; then
+        SKIP_BROWSER="1"
+        INSTALL_PROFILE_DEFAULTED="cli-only-unsupported"
+        log "local browser setup unsupported; selecting CLI-only installation"
+    fi
+}
+
+collect_install_profile() {
+    if [ -n "$FULL_INSTALL" ] || [ -n "$SKIP_BROWSER" ]; then
         return
     fi
 
-    # Only ask if rote will be available to run deno/shell commands.
-    # At this point the binary isn't installed yet, but we know we're about
-    # to install it — ask now so downloads can overlap.
-    echo "" >&2
-    printf "  ${BOLD}Quick setup questions${NC} ${DIM}(your answers let us fetch everything at once)${NC}\n" >&2
-    echo "" >&2
-
-    progress_clear
-    printf "  ${CYAN}?${NC}  %-10s Install Deno runtime for TypeScript flows? ${DIM}[Y/n]${NC} " \
-        "deno" >&2
-    prompt_user WANT_DENO
-    WANT_DENO=${WANT_DENO:-Y}
-
-    printf "  ${CYAN}?${NC}  %-10s Set up shell integration (hooks, PATH)? ${DIM}[Y/n]${NC} " \
-        "shell" >&2
-    prompt_user WANT_SHELL
-    WANT_SHELL=${WANT_SHELL:-Y}
+    if [ -n "$AUTO_YES" ] || ! has_prompt_tty; then
+        FULL_INSTALL="1"
+        INSTALL_PROFILE_DEFAULTED="1"
+        log "non-interactive install detected; defaulting to full installation"
+        return
+    fi
 
     echo "" >&2
+    printf "  ${BOLD}Browser automation${NC} enables rote-browse and full browser workflows.\n" >&2
+    echo "" >&2
+
+    while true; do
+        local browser_choice=""
+        printf "  ${CYAN}?${NC} Install browser automation? ${DIM}[Y/n]${NC}: " >&2
+        prompt_user browser_choice || browser_choice=""
+        case "$browser_choice" in
+            ""|y|Y|yes|Yes|YES)
+                FULL_INSTALL="1"
+                printf "  ${GREEN}✓${NC} Installing the CLI with browser automation.\n" >&2
+                return
+                ;;
+            n|N|no|No|NO)
+                SKIP_BROWSER="1"
+                printf "  ${GREEN}✓${NC} Installing the CLI only. Add browser support later with: ${GREEN}rote setup --full${NC}\n" >&2
+                return
+                ;;
+            *)
+                printf "  ${YELLOW}!${NC} Enter y or n.\n" >&2
+                ;;
+        esac
+    done
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -769,9 +878,8 @@ install_rote() {
     #   deno  ──────────────────→ sdk
     #   stdio (no dependencies)
     #
-    # Strategy A: collect user answers upfront (done in collect_preferences),
-    # then fire all independent jobs together. The visible spinner covers
-    # whichever job takes longest. Background jobs log to $LOG_FILE.
+    # Fire all independent jobs together. The visible spinner covers whichever
+    # job takes longest. Background jobs log to $LOG_FILE.
     # bg_collect prints a newline per job so the terminal builds up a
     # clean list of completed steps.
     # ══════════════════════════════════════════════════════════════════════
@@ -792,15 +900,13 @@ install_rote() {
                 rote node install
         fi
 
-        # deno: only if user said yes — skip if done
-        if [ "$WANT_DENO" = "Y" ] || [ "$WANT_DENO" = "y" ]; then
-            if step_done "deno"; then
-                COMPLETED_STEPS+=("deno"); STEP_COUNT=$((STEP_COUNT + 1))
-                log "· [deno] already done, skipping"
-            else
-                bg_start "deno" "Installing Deno runtime..." \
-                    rote deno install
-            fi
+        # deno: always install — skip if done
+        if step_done "deno"; then
+            COMPLETED_STEPS+=("deno"); STEP_COUNT=$((STEP_COUNT + 1))
+            log "· [deno] already done, skipping"
+        else
+            bg_start "deno" "Installing Deno runtime..." \
+                rote deno install
         fi
 
         # stdio: independent, fire immediately — skip if done
@@ -871,100 +977,91 @@ install_rote() {
             progress_ok "path" "$ROTE_HOME/bin in PATH"
         fi
 
-        # ── playwright: skipped by default; use --full to install ───────────
+        # ── browser runtime ────────────────────────────────────────────────
         if step_done "browser"; then
             COMPLETED_STEPS+=("browser"); STEP_COUNT=$((STEP_COUNT + 1))
             log "· [browser] already done, skipping"
-        elif [ -z "$FULL_INSTALL" ] && [ -z "$ROTE_SKIP_BROWSER" ]; then
+        elif [ -n "$SKIP_BROWSER" ]; then
             STEP_COUNT=$((STEP_COUNT + 1))
             COMPLETED_STEPS+=("browser")
             mark_done "browser_skipped"
-            log "· [browser] skipped (no --full)"
-            printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
-                "$(elapsed)" "browser" "Skipped (run: rote setup --full to install)" >&2
-        elif [ -n "$ROTE_SKIP_BROWSER" ]; then
-            STEP_COUNT=$((STEP_COUNT + 1))
-            COMPLETED_STEPS+=("browser")
-            mark_done "browser_skipped"
-            log "· [browser] skipped (ROTE_SKIP_BROWSER set)"
-            printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
-                "$(elapsed)" "browser" "Skipped (ROTE_SKIP_BROWSER set)" >&2
-        elif command -v npx >/dev/null 2>&1; then
-            if [ "$OS" = "linux" ] && [ "$ARCH" = "aarch64" ]; then
-                progress "browser" "Installing Playwright Chromium (arm64)..." \
-                    npx -y @playwright/test install --with-deps chromium || true
+            log "· [browser] skipped (CLI-only profile)"
+            printf "\r  ${YELLOW}!${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
+                "$(elapsed)" "browser" \
+                "Browser automation unavailable; this CLI-only install does not provide full rote capabilities." >&2
+            print_browser_skipped_guidance "$binary_path"
+        elif ! binary_supports_full_setup "$binary_path"; then
+            local installed_version
+            installed_version=$("$binary_path" --version 2>/dev/null || printf 'rote (unknown version)')
+            printf "  ${RED}✗${NC} Downloaded %s does not support Full browser setup.\n" "$installed_version" >&2
+            printf "    The installer script is newer than the downloaded binary release.\n" >&2
+            printf "    The CLI is installed, but browser automation is unavailable.\n" >&2
+            printf "    Retry after upgrading: \"%s\" setup --full\n" "$binary_path" >&2
+            printf "    Or install CLI-only now: ${GREEN}ROTE_SKIP_BROWSER=1${NC} bash -c \"\$(curl -fsSL https://getrote.dev/install)\"\n" >&2
+            log "browser setup unavailable: installed binary lacks setup --full"
+            return 2
+        else
+            if progress "browser" "Installing Playwright browser runtime..." \
+                "$binary_path" setup --full; then
+                :
             else
-                PW_BROWSER=$(detect_playwright_browser)
-                if [ "$PW_BROWSER" = "firefox" ]; then
-                    progress "browser" "Installing Playwright Firefox..." \
-                        npx -y @playwright/test install --with-deps firefox || true
-                else
-                    progress "browser" "Installing Playwright Chrome..." \
-                        npx -y @playwright/test install --with-deps chrome || true
-                fi
+                local browser_setup_rc=$?
+                progress_clear
+                printf "  ${RED}✗${NC} Browser runtime setup failed.\n" >&2
+                printf "  Log: %s\n" "$LOG_FILE" >&2
+                printf "  Retry: \"%s\" setup --full\n" "$binary_path" >&2
+                return "$browser_setup_rc"
             fi
         fi
 
         # ── deno: collect + sdk (sdk depends on deno being done) ──────────
-        if [ "$WANT_DENO" = "Y" ] || [ "$WANT_DENO" = "y" ]; then
-            if ! step_done "deno"; then
-                bg_collect "deno" || true
+        if ! step_done "deno"; then
+            bg_collect "deno" || true
+        fi
+        if step_done "deno"; then
+            if step_done "sdk"; then
+                COMPLETED_STEPS+=("sdk"); STEP_COUNT=$((STEP_COUNT + 1))
+                log "· [sdk] already done, skipping"
+            else
+                progress "sdk" "Installing TypeScript SDK..." \
+                    rote sdk install || true
             fi
-            if step_done "deno"; then
-                if step_done "sdk"; then
-                    COMPLETED_STEPS+=("sdk"); STEP_COUNT=$((STEP_COUNT + 1))
-                    log "· [sdk] already done, skipping"
-                else
-                    progress "sdk" "Installing TypeScript SDK..." \
-                        rote sdk install || true
-                fi
-            fi
-        else
-            STEP_COUNT=$((STEP_COUNT + 1))
-            COMPLETED_STEPS+=("deno")
-            log "· [deno] Skipped by user"
         fi
 
     fi
 
     # ── shell setup (serial, fast, writes config files) ───────────────────
     if [ -z "$BARE_INSTALL" ] && command -v rote >/dev/null 2>&1; then
-        if [ "$WANT_SHELL" = "Y" ] || [ "$WANT_SHELL" = "y" ]; then
-            if step_done "shell"; then
-                COMPLETED_STEPS+=("shell"); STEP_COUNT=$((STEP_COUNT + 1))
-                log "· [shell] already done, skipping"
-            elif ! shell_setup_supported; then
-                local shell_name
-                shell_name=$(shell_display_name)
-                STEP_COUNT=$((STEP_COUNT + 1))
-                COMPLETED_STEPS+=("shell")
-                mark_done "shell_skipped"
-                log "· [shell] Skipped ($shell_name unsupported)"
-                printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
-                    "$(elapsed)" "shell" "Skipped ($shell_name unsupported)" >&2
-            else
-                progress "shell" "Setting up shell integration..." \
-                    rote shell-setup || true
+        if step_done "shell"; then
+            COMPLETED_STEPS+=("shell"); STEP_COUNT=$((STEP_COUNT + 1))
+            log "· [shell] already done, skipping"
+        elif ! shell_setup_supported; then
+            local shell_name
+            shell_name=$(shell_display_name)
+            STEP_COUNT=$((STEP_COUNT + 1))
+            COMPLETED_STEPS+=("shell")
+            mark_done "shell_skipped"
+            log "· [shell] Skipped ($shell_name unsupported)"
+            printf "\r  ${GREEN}●${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
+                "$(elapsed)" "shell" "Skipped ($shell_name unsupported)" >&2
+        else
+            progress "shell" "Setting up shell integration..." \
+                rote shell-setup || true
 
-                SHELL_CONFIG=$(detect_shell_config)
+            SHELL_CONFIG=$(detect_shell_config)
 
-                if [ -n "$SHELL_CONFIG" ]; then
-                    if ! grep -qE '# rote shell integration|rote/shell/init\.sh' "$SHELL_CONFIG" 2>/dev/null; then
-                        echo "" >> "$SHELL_CONFIG"
-                        echo "# rote shell integration" >> "$SHELL_CONFIG"
-                        if [ "$ROTE_HOME" = "$HOME/.rote" ]; then
-                            echo '[ -f ~/.rote/shell/init.sh ] && source ~/.rote/shell/init.sh' >> "$SHELL_CONFIG"
-                        else
-                            printf '[ -f "%s/shell/init.sh" ] && . "%s/shell/init.sh"\n' \
-                                "$ROTE_HOME" "$ROTE_HOME" >> "$SHELL_CONFIG"
-                        fi
+            if [ -n "$SHELL_CONFIG" ]; then
+                if ! grep -qE '# rote shell integration|rote/shell/init\.sh' "$SHELL_CONFIG" 2>/dev/null; then
+                    echo "" >> "$SHELL_CONFIG"
+                    echo "# rote shell integration" >> "$SHELL_CONFIG"
+                    if [ "$ROTE_HOME" = "$HOME/.rote" ]; then
+                        echo '[ -f ~/.rote/shell/init.sh ] && source ~/.rote/shell/init.sh' >> "$SHELL_CONFIG"
+                    else
+                        printf '[ -f "%s/shell/init.sh" ] && . "%s/shell/init.sh"\n' \
+                            "$ROTE_HOME" "$ROTE_HOME" >> "$SHELL_CONFIG"
                     fi
                 fi
             fi
-        else
-            STEP_COUNT=$((STEP_COUNT + 1))
-            COMPLETED_STEPS+=("shell")
-            log "· [shell] Skipped by user"
         fi
     fi
 }
@@ -1054,10 +1151,26 @@ main() {
 
     if install_is_noninteractive; then
         INSTALL_NONINTERACTIVE="1"
-        if [ -z "$BARE_INSTALL" ]; then
-            printf "  ${BOLD}Non-interactive:${NC} ${GREEN}setup prompts defaulted to yes${NC}\n" >&2
-            echo "" >&2
+    fi
+
+    detect_platform
+    detect_full_setup_capability
+
+    if [ -z "$BARE_INSTALL" ]; then
+        validate_install_profile
+        apply_platform_install_profile
+        collect_install_profile
+    fi
+
+    if [ -n "$INSTALL_NONINTERACTIVE" ] && [ -z "$BARE_INSTALL" ]; then
+        if [ "$INSTALL_PROFILE_DEFAULTED" = "1" ]; then
+            printf "  ${BOLD}Non-interactive:${NC} ${GREEN}full installation selected by default${NC}\n" >&2
+        elif [ -n "$SKIP_BROWSER" ]; then
+            printf "  ${BOLD}Non-interactive:${NC} ${GREEN}CLI-only installation selected${NC}\n" >&2
+        else
+            printf "  ${BOLD}Non-interactive:${NC} ${GREEN}full installation selected${NC}\n" >&2
         fi
+        echo "" >&2
     fi
 
     # Show resume notice if a prior run was interrupted
@@ -1073,11 +1186,9 @@ main() {
     log "=== rote installation started ==="
 
     # Strip legacy rote completion lines from rc files (best-effort, silent).
-    # Runs unconditionally so --bare / WANT_SHELL=N upgrades also get cleaned.
+    # Runs unconditionally so --bare upgrades also get cleaned.
     clean_legacy_completion
 
-    # Detect platform (instant)
-    detect_platform
     progress_ok "detect" "Platform: $PLATFORM_LABEL"
 
     # Resolve version
@@ -1113,18 +1224,6 @@ main() {
     fi
 
     log "Version: v$VERSION"
-
-    # Collect user preferences upfront — before any downloads start.
-    # Interactive: asks two Y/n questions then begins parallel phase.
-    # No prompt TTY, or ROTE_YES=1, skips questions and defaults all to Y.
-    # Bare (--bare): runtime + shell blocks are skipped, so
-    # asking would just collect ignored answers.
-    if [ -n "$BARE_INSTALL" ]; then
-        WANT_DENO="N"
-        WANT_SHELL="N"
-    else
-        collect_preferences
-    fi
 
     # Install binary + run parallel phase
     install_rote
