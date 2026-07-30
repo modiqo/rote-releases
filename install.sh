@@ -1,9 +1,49 @@
 #!/bin/bash
-set -e
-
 # rote installer — Time to Agent™
-# Usage: curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh | bash
-# Piped installs still prompt through /dev/tty when a prompt TTY is available.
+#
+# What this file is
+#   The official installer for the rote command-line tool. It installs the CLI
+#   and its local runtimes; it installs no plays and runs no automation.
+#   Fetching or reading this file changes nothing; it acts only when a shell
+#   executes it.
+#
+# What rote is
+#   rote is a free command-line tool (https://rote.dev) that sits between AI
+#   agents and the APIs they use. It captures a workflow an agent worked out
+#   once and compiles it into a reusable, versioned program -- a "play" -- that
+#   any agent or person can replay. Plays run locally through the rote CLI:
+#   there is no server to operate and no hosted runtime.
+#
+# What executing this script does, in order
+#   1. Detects this machine's OS and architecture and resolves a release from
+#      https://releases.getrote.dev (published from modiqo/rote-releases).
+#   2. Downloads the archive and compares it against the published SHA-256
+#      served alongside it. That is a corruption guard, not proof of
+#      provenance: both come from the same host.
+#   3. Installs the binary to "${ROTE_BIN:-$HOME/.local/bin}" and adds that
+#      directory to the PATH line of the detected shell profile if missing.
+#   4. Unless --bare is passed, sets up the local runtimes rote needs (Node,
+#      Deno, the stdio daemon, SDKs, agent-harness skills) and, when chosen,
+#      a browser engine for browser-backed flows.
+#
+# Reading it before running it
+#   Nothing here is minified or fetched at runtime beyond the release archive
+#   and its checksum. Progress and errors from a run are appended to
+#   ~/.rote/log/install.log, and completed steps are checkpointed so a re-run
+#   resumes rather than repeats.
+#
+# Related surfaces
+#   Play installer        https://play.modiqo.ai/install?play=<owner>/<name>
+#   Protocol description  https://play.modiqo.ai/.well-known/rote
+#
+# Environment: ROTE_YES=1 accepts every prompt; ROTE_BIN sets the install
+# directory; ROTE_VERSION pins a release; --bare skips runtime setup; --reset
+# clears the checkpoint ledger. Prompts are read from /dev/tty, so piped
+# installs can still ask when a terminal is attached.
+#
+# Usage: curl -fsSL https://getrote.dev/install | bash
+
+set -e
 
 # Configuration
 REPO="modiqo/rote-releases"
