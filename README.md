@@ -120,6 +120,15 @@ rote guidance     # Deep-dive topics: agent, adapters, browser, registry, ...
 
 ## install
 
+### Playoffs guided setup
+
+```bash
+curl -fsSL https://getrote.dev/playoffs/install.sh | sh
+```
+
+This path redirects to the canonical `modiqo/play@main` installer so the
+public setup entrypoint cannot drift from Play releases.
+
 ### One-liner (macOS, Linux)
 
 ```bash
