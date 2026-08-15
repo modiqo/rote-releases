@@ -703,11 +703,9 @@ stage_setup_skills() {
             return 0
         fi
     fi
-    # Staging is an internal, non-interactive handoff. Keep it detached from
-    # the caller's terminal so an older CLI cannot surface target selection.
-    if ! "$rote_bin" install skill --path "$setup_dir" --package '*' --force </dev/null >>"$LOG_FILE" 2>&1; then
+    if ! "$rote_bin" install skill --path "$setup_dir" --package '*' --force >>"$LOG_FILE" 2>&1; then
         log "setup skill: package-aware staging failed; retrying legacy install"
-        if ! "$rote_bin" install skill --path "$setup_dir" --force </dev/null >>"$LOG_FILE" 2>&1; then
+        if ! "$rote_bin" install skill --path "$setup_dir" --force >>"$LOG_FILE" 2>&1; then
             setup_skill_unavailable "bundled skill install failed" "$setup_dir"
             return 0
         fi
