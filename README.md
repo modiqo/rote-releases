@@ -126,8 +126,9 @@ rote guidance     # Deep-dive topics: agent, adapters, browser, registry, ...
 curl -fsSL https://getrote.dev/playoffs/install.sh | sh
 ```
 
-This path redirects to the canonical `modiqo/play@main` installer so the
-public setup entrypoint cannot drift from Play releases.
+This uncached entrypoint selects the current immutable Play release and pins
+both its installer and downloaded archive to that release. The public command
+therefore stays stable without depending on a cached `main` redirect.
 
 ### One-liner (macOS, Linux)
 
