@@ -3,7 +3,7 @@ set -eu
 
 # This small, uncached selector keeps the public command stable while the
 # installer and its downloaded archive remain pinned to one immutable release.
-release=v0.4.47
+release=v0.4.48
 
 curl --proto '=https' --tlsv1.2 -fsSL \
   "https://raw.githubusercontent.com/modiqo/play/${release}/install.sh" \
