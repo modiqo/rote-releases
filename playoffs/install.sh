@@ -7,4 +7,4 @@ release=v0.4.79
 
 curl --proto '=https' --tlsv1.2 -fsSL \
   "https://raw.githubusercontent.com/modiqo/play/${release}/install.sh" \
-  | env PLAY_INSTALL_REF="${release}" sh -s -- "$@"
+  | env PLAY_INSTALL_REF="${release}" PLAY_INSTALL_CHANNEL=playoffs sh -s -- "$@"
