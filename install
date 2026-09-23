@@ -55,6 +55,9 @@ VERSION="${ROTE_VERSION:-latest}"
 # ROTE_RELEASES_BASE_URL overrides the release artifact host (mirror/staging/tests).
 RELEASES_BASE_URL="${ROTE_RELEASES_BASE_URL:-https://releases.getrote.dev}"
 RELEASES_BASE_URL="${RELEASES_BASE_URL%/}"
+# curl has no default deadline, so a stalled transfer would hang instead of
+# failing into the retry loop. Abort on a slow connect or 20s below 1 KiB/s.
+CURL_STALL_OPTS=(--connect-timeout 10 --speed-limit 1024 --speed-time 20)
 AUTO_YES="${ROTE_YES:-}"
 RESET_INSTALL="${ROTE_RESET:-}"
 FULL_INSTALL="${ROTE_FULL:-}"
@@ -625,7 +628,7 @@ verify_sha256() {
         return 1
     fi
 
-    expected=$(curl -fsSL "$checksum_url" | awk '{print $1}')
+    expected=$(curl -fsSL "${CURL_STALL_OPTS[@]}" "$checksum_url" | awk '{print $1}')
     if [ "${#expected}" -ne 64 ]; then
         echo "invalid or missing checksum at $checksum_url" >&2
         return 1
@@ -818,7 +821,7 @@ install_rote() {
         while true; do
             rm -f "$archive_file"
             if progress "download" "Fetching rote v${VERSION}..." \
-                curl -fsSL "$download_url" -o "$archive_file"; then
+                curl -fsSL "${CURL_STALL_OPTS[@]}" "$download_url" -o "$archive_file"; then
                 # ── verify checksum ───────────────────────────────────────────
                 if progress "checksum" "Verifying sha256..." \
                     verify_sha256 "$archive_file" "${download_url}.sha256"; then
@@ -1241,7 +1244,7 @@ main() {
                 # Resolve via github.com redirect, not api.github.com — the
                 # API has a 60/hr unauth quota that NAT/CI/corp IPs blow
                 # through, returning 403. The redirect has no rate limit.
-                URL=$(curl -fsSLI -o /dev/null -w "%{url_effective}" \
+                URL=$(curl -fsSLI --connect-timeout 10 --max-time 30 -o /dev/null -w "%{url_effective}" \
                     "https://github.com/$REPO/releases/latest" 2>>"$LOG")
                 # Require redirect into /releases/tag/<tag>, then strip
                 # optional leading `v`. Rejects 200-no-redirect, error pages,
