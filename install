@@ -71,7 +71,6 @@ SETUP_SKILL_STATUS=""
 SETUP_ENTRYPOINT="rote-setup/SKILL.md"
 INSTALL_NONINTERACTIVE=""
 INSTALL_PROFILE_DEFAULTED=""
-FULL_SETUP_UNSUPPORTED=""
 
 # Parse --reset / --full flags
 for arg in "$@"; do
@@ -439,7 +438,6 @@ detect_full_setup_capability() {
         macos_version="${ROTE_TEST_MACOS_VERSION:-}"
     fi
     FULL_SETUP_SUPPORTED=""
-    FULL_SETUP_UNSUPPORTED=""
     FULL_SETUP_HOST="$capability_os"
 
     case "$capability_arch" in
@@ -506,15 +504,6 @@ print_unsupported_full_guidance() {
     printf "    Use this CLI-only install, or run ${GREEN}rote setup --full${NC} on a supported browser host and use that host for browser work.\n" >&2
 }
 
-print_browser_skipped_guidance() {
-    local binary_path="$1"
-    if [ -n "$FULL_SETUP_UNSUPPORTED" ]; then
-        printf "  Use a supported browser host for browser work; run rote setup --full on that host.\n" >&2
-    else
-        printf "  Complete it later: \"%s\" setup --full\n" "$binary_path" >&2
-    fi
-}
-
 binary_supports_full_setup() {
     local binary_path="$1"
     local help_output
@@ -545,10 +534,9 @@ validate_install_profile() {
 }
 
 apply_platform_install_profile() {
-    if [ -n "$FULL_SETUP_SUPPORTED" ]; then
+    if [ -n "$SKIP_BROWSER" ] || [ -n "$FULL_SETUP_SUPPORTED" ]; then
         return
     fi
-    FULL_SETUP_UNSUPPORTED="1"
     if [ -n "$FULL_INSTALL_EXPLICIT" ]; then
         printf "  ${RED}✗${NC} Full browser setup is unavailable on %s.\n" "$FULL_SETUP_HOST" >&2
         printf "    rote local Full supports macOS 14+ and exact Debian 12/13 or Ubuntu 22.04/24.04/26.04 hosts on x86-64 or arm64.\n" >&2
@@ -559,11 +547,9 @@ apply_platform_install_profile() {
     fi
 
     print_unsupported_full_guidance
-    if [ -z "$SKIP_BROWSER" ]; then
-        SKIP_BROWSER="1"
-        INSTALL_PROFILE_DEFAULTED="cli-only-unsupported"
-        log "local browser setup unsupported; selecting CLI-only installation"
-    fi
+    SKIP_BROWSER="1"
+    INSTALL_PROFILE_DEFAULTED="cli-only-unsupported"
+    log "local browser setup unsupported; selecting CLI-only installation"
 }
 
 collect_install_profile() {
@@ -1029,10 +1015,6 @@ install_rote() {
             COMPLETED_STEPS+=("browser")
             mark_done "browser_skipped"
             log "· [browser] skipped (CLI-only profile)"
-            printf "\r  ${YELLOW}!${NC} ${DIM}%s${NC}  %-10s %s\033[K\n" \
-                "$(elapsed)" "browser" \
-                "Browser automation unavailable; this CLI-only install does not provide full rote capabilities." >&2
-            print_browser_skipped_guidance "$binary_path"
         elif ! binary_supports_full_setup "$binary_path"; then
             local installed_version
             installed_version=$("$binary_path" --version 2>/dev/null || printf 'rote (unknown version)')
