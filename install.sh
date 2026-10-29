@@ -1,10 +1,18 @@
 #!/bin/bash
 # Binary bootstrap only. Native `rote install setup` owns all setup and reporting.
 # Checksums from the artifact host guard corruption, not independent provenance.
+# On a first install into a ROTE_HOME, `rote __install-ci-opt-out` disables
+# auto-update when CI is set and preferences do not already choose; a pipeline
+# that reuses a home can set ROTE_NO_AUTO_UPDATE=1.
 set -e
 set -o pipefail
 INSTALL_DIR="${ROTE_BIN:-${ROTE_INSTALL_DIR:-$HOME/.local/bin}}"
 ROTE_HOME="${ROTE_HOME:-$HOME/.rote}"
+# Captured before record_install_marker writes the marker: the CI auto-update opt-out
+# applies only to a first install, so agent shells that export CI and rerun
+# the installer on a dev machine never silently opt the user out.
+FIRST_INSTALL=""
+[ -e "$ROTE_HOME/state/install.json" ] || FIRST_INSTALL="1"
 VERSION="${ROTE_VERSION:-latest}"
 RELEASES_BASE_URL="${ROTE_RELEASES_BASE_URL:-https://releases.getrote.dev}"
 RELEASES_BASE_URL="${RELEASES_BASE_URL%/}"
@@ -22,6 +30,9 @@ INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd -P)
 ROTE_HOME=$(cd "$ROTE_HOME" && pwd -P)
 LOG_FILE="$ROTE_HOME/log/install.log"
 STATE_FILE="$ROTE_HOME/log/install.state"
+# SHA-256 of the binary this script installed. A same-version binary from
+# anywhere else (a local build, another installer) is not reused.
+BINARY_SHA_FILE="$ROTE_HOME/log/install.sha256"
 [ -z "$RESET_INSTALL" ] || rm -f "$STATE_FILE"
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
 status() { printf '%s\n' "$*" >&2; log "$*"; }
@@ -41,19 +52,42 @@ record_install_marker() {
     printf '{ "method": "script", "bin": "%s" }\n' "$(json_escape "$INSTALL_DIR/rote")" > "$marker_tmp"
     mv "$marker_tmp" "$ROTE_HOME/state/install.json"
 }
+# CI runners should stay on the version they installed. The runtime no longer
+# reads CI (agent harnesses export it on dev machines), so opt out here: on a
+# first install, or on a reinstall after a first install could not get an
+# answer (an I/O failure, or a pinned older binary without the command).
+# The binary owns the CI truthiness rule and the preferences parsing.
+disable_auto_update_on_ci() {
+    local outcome
+    local pending="$ROTE_HOME/state/ci-opt-out.pending"
+    [ -n "$FIRST_INSTALL" ] || [ -e "$pending" ] || return 0
+    outcome=$(ROTE_HOME="$ROTE_HOME" "$INSTALL_DIR/rote" __install-ci-opt-out 2>>"$LOG_FILE") || outcome=''
+    case "$outcome" in
+        disabled) status 'Auto-update disabled because CI is set; re-enable with `rote update auto enable`.' ;;
+        kept) log 'CI is set; keeping the existing self_update preference' ;;
+        not-ci) ;;
+        *)
+            log "CI auto-update opt-out unavailable (output: ${outcome:-none}); retrying on the next install"
+            : > "$pending" 2>/dev/null || log "could not record $pending"
+            return 0
+            ;;
+    esac
+    rm -f "$pending"
+}
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+    else log 'no sha256 tool available'; return 1; fi
+}
 verify_sha256() {
     local expected actual
-    local hasher=()
-    if command -v sha256sum >/dev/null 2>&1; then hasher=(sha256sum)
-    elif command -v shasum >/dev/null 2>&1; then hasher=(shasum -a 256)
-    else log 'no sha256 tool available'; return 1; fi
     expected=$(curl -fsSL "${CURL_STALL_OPTS[@]}" "$2" 2>>"$LOG_FILE" | awk '{print $1}') || return 1
     [[ "$expected" =~ ^[a-fA-F0-9]{64}$ ]] || { log 'invalid or missing checksum'; return 1; }
-    actual=$("${hasher[@]}" "$1" | awk '{print $1}') || return 1
+    actual=$(sha256_of "$1") || return 1
     [ "$expected" = "$actual" ] || { log "checksum mismatch: expected $expected, got $actual"; return 1; }
 }
 main() {
-    local os arch artifact url tag tmp_dir archive attempt reason previous observed
+    local os arch artifact url tag tmp_dir archive attempt reason previous observed installed_sha
     os=$(uname -s); arch=$(uname -m)
     case "$os" in Linux) os=linux ;; Darwin) os=macos ;; *) fail "Unsupported OS: $os." ;; esac
     case "$arch" in x86_64|amd64) arch=x86_64 ;; arm64|aarch64) arch=aarch64 ;; *) fail "Unsupported architecture: $arch." ;; esac
@@ -67,7 +101,12 @@ main() {
     case "$VERSION" in ''|*/*) fail 'Invalid release version.' ;; esac
     previous=$("$INSTALL_DIR/rote" --version 2>>"$LOG_FILE") || previous=''
     previous="${previous#rote }"
-    if ! step_done install || [ "$previous" != "$VERSION" ]; then
+    installed_sha=$(sha256_of "$INSTALL_DIR/rote" 2>>"$LOG_FILE") || installed_sha=''
+    if [ -n "$installed_sha" ] && [ "$installed_sha" != "$(cat "$BINARY_SHA_FILE" 2>/dev/null)" ]; then
+        log "$INSTALL_DIR/rote is not the binary this script installed; reinstalling"
+        installed_sha=''
+    fi
+    if ! step_done install || [ "$previous" != "$VERSION" ] || [ -z "$installed_sha" ]; then
         if [ -f "$STATE_FILE" ]; then
             grep -v -e '^install=ok$' -e '^sdk=ok$' -e '^stdio=ok$' "$STATE_FILE" > "$STATE_FILE.tmp" || true
             mv "$STATE_FILE.tmp" "$STATE_FILE"
@@ -94,6 +133,7 @@ main() {
         [ -f "$tmp_dir/rote" ] || fail 'Archive contains no Rote binary.'
         chmod +x "$tmp_dir/rote"
         mv "$tmp_dir/rote" "$INSTALL_DIR/rote"
+        sha256_of "$INSTALL_DIR/rote" > "$BINARY_SHA_FILE" || fail 'Failed to record the installed binary checksum.'
         if [ -f "$tmp_dir/rote-stdio-daemon" ]; then
             chmod +x "$tmp_dir/rote-stdio-daemon"
             mv "$tmp_dir/rote-stdio-daemon" "$INSTALL_DIR/rote-stdio-daemon"
@@ -105,6 +145,7 @@ main() {
     [ -n "$observed" ] || fail 'No working Rote binary after installation.'
     record_install_marker || fail 'Failed to record installation marker.'
     mark_done install
+    disable_auto_update_on_ci
     export ROTE_BOOTSTRAP=1 ROTE_BOOTSTRAP_PREVIOUS_VERSION="$previous"
     export ROTE_BIN="$INSTALL_DIR" ROTE_HOME
     export ROTE_BOOTSTRAP_ORIGINAL_PATH="$PATH"
