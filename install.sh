@@ -132,12 +132,14 @@ main() {
         tar xzf "$archive" -C "$tmp_dir" >>"$LOG_FILE" 2>&1 || fail 'Extraction failed.'
         [ -f "$tmp_dir/rote" ] || fail 'Archive contains no Rote binary.'
         chmod +x "$tmp_dir/rote"
+        for helper in rote-stdio-daemon rote-code-supervisor; do
+            if [ -f "$tmp_dir/$helper" ]; then
+                chmod +x "$tmp_dir/$helper"
+                mv "$tmp_dir/$helper" "$INSTALL_DIR/$helper"
+            fi
+        done
         mv "$tmp_dir/rote" "$INSTALL_DIR/rote"
         sha256_of "$INSTALL_DIR/rote" > "$BINARY_SHA_FILE" || fail 'Failed to record the installed binary checksum.'
-        if [ -f "$tmp_dir/rote-stdio-daemon" ]; then
-            chmod +x "$tmp_dir/rote-stdio-daemon"
-            mv "$tmp_dir/rote-stdio-daemon" "$INSTALL_DIR/rote-stdio-daemon"
-        fi
         rm -rf "$tmp_dir"
         trap - EXIT
     fi
