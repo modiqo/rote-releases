@@ -4,6 +4,9 @@
 # On a first install into a ROTE_HOME, `rote __install-ci-opt-out` disables
 # auto-update when CI is set and preferences do not already choose; a pipeline
 # that reuses a home can set ROTE_NO_AUTO_UPDATE=1.
+# `rote install setup` installs Play with every profile but --bare. The line
+# older docs show for Play still works:
+#   curl -fsSL https://raw.githubusercontent.com/modiqo/rote-releases/main/install.sh | bash -s -- --pack play
 set -e
 set -o pipefail
 INSTALL_DIR="${ROTE_BIN:-${ROTE_INSTALL_DIR:-$HOME/.local/bin}}"
@@ -19,12 +22,33 @@ RELEASES_BASE_URL="${RELEASES_BASE_URL%/}"
 CURL_STALL_OPTS=(--connect-timeout 10 --speed-limit 1024 --speed-time 20)
 RESET_INSTALL="${ROTE_RESET:-}"
 AUTO_YES="${ROTE_YES:-}"
-for arg in "$@"; do
-    case "$arg" in
-        --reset) RESET_INSTALL=1 ;;
-        --yes|-y) AUTO_YES=1 ;;
+# `--pack play` (or ROTE_PACK=play) is accepted for older docs and changes
+# nothing. Every other argument, `--harness` included, goes to
+# `rote install setup`.
+PACK="${ROTE_PACK:-}"
+BARE=""
+SETUP_ARGS=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --reset) RESET_INSTALL=1; SETUP_ARGS+=("$1") ;;
+        --yes|-y) AUTO_YES=1; SETUP_ARGS+=("$1") ;;
+        --bare) BARE=1; SETUP_ARGS+=("$1") ;;
+        --pack)
+            [ "$#" -ge 2 ] || { printf '%s\n' '--pack needs a value: --pack play' >&2; exit 2; }
+            PACK="$2"; shift ;;
+        --pack=*) PACK="${1#--pack=}" ;;
+        *) SETUP_ARGS+=("$1") ;;
     esac
+    shift
 done
+case "$PACK" in
+    ''|play) ;;
+    *) printf 'Unknown pack: %s. The known pack is play.\n' "$PACK" >&2; exit 2 ;;
+esac
+if [ -n "$PACK" ] && [ -n "$BARE" ]; then
+    printf '%s\n' '--pack play asks for Play, and --bare installs rote without it; choose one.' >&2
+    exit 2
+fi
 mkdir -p "$ROTE_HOME/log" "$INSTALL_DIR"
 INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd -P)
 ROTE_HOME=$(cd "$ROTE_HOME" && pwd -P)
@@ -159,4 +183,4 @@ main() {
     fi
     exec "$INSTALL_DIR/rote" install setup "$@" </dev/null
 }
-main "$@"
+main "${SETUP_ARGS[@]}"
